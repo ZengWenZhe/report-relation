@@ -37,7 +37,7 @@ public class ReportRelationBusinessEntity extends BaseEntity {
     @ApiModelProperty("结构化提取结果 JSON")
     private String extractSchema;
 
-    @ApiModelProperty("提取状态：0=未提取，1=提取中，2=成功，3=失败")
+    @ApiModelProperty("提取状态：0=未提取，1=提取中，2=成功，3=失败，4=无关/弱关系")
     private Integer extractStatus;
 
     @ApiModelProperty("汇报创建时间")

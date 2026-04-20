@@ -9,12 +9,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 import javax.annotation.PreDestroy;
 import javax.annotation.Resource;
 
 import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONObject;
 import com.xgjktech.cloud.common.Result;
 import com.xgjktech.reportrelation.base.feign.FilegptFeign;
 import com.xgjktech.reportrelation.base.feign.PmsFeign;
@@ -183,11 +183,21 @@ public class ExtractSchemaService {
         log.info("AI结构化提取成功，reportId={}, answer前100字={}",
                 record.getReportId(), StringUtils.abbreviate(answer, 100));
 
+        JSONObject jsonResult;
         try {
-            JSON.parseObject(answer);
+            jsonResult = JSON.parseObject(answer);
         } catch (Exception e) {
             log.error("AI返回结果JSON解析失败，reportId={}, answer={}", record.getReportId(), answer, e);
             reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
+            return;
+        }
+
+        String relevance = jsonResult.getString("relevance");
+        if ("none".equals(relevance) || "weak".equals(relevance)) {
+            log.info("汇报与举措相关性不足，relevance={}，reason={}，reportId={}, bizId={}",
+                    relevance, jsonResult.getString("relevance_reason"),
+                    record.getReportId(), record.getBizId());
+            reportRelationBusinessService.updateExtractStatus(record.getId(), 4, answer);
             return;
         }
 
