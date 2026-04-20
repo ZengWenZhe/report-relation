@@ -48,7 +48,7 @@ public class ExtractSchemaService {
 
     private static final int DEFAULT_BATCH_SIZE = 50;
 
-    private static final int CONCURRENT_THREADS = 5;
+    private static final int CONCURRENT_THREADS = 12;
 
     private final ExecutorService extractExecutor = Executors.newFixedThreadPool(CONCURRENT_THREADS);
 
