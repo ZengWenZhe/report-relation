@@ -2,14 +2,12 @@ package com.xgjktech.reportrelation.service;
 
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 import javax.annotation.PreDestroy;
 import javax.annotation.Resource;
@@ -44,9 +42,9 @@ public class ExtractSchemaService {
 
     private static final int AI_TYPE = 14;
 
-    private static final String BIZ_CODE = "bp_report_relation_extract";
+    private static final String BIZ_CODE = "report_extract_schema";
 
-    private static final int DEFAULT_BATCH_SIZE = 20;
+    private static final int DEFAULT_BATCH_SIZE = 50;
 
     private static final int CONCURRENT_THREADS = 5;
 
@@ -91,7 +89,7 @@ public class ExtractSchemaService {
         log.info("开始批量提取，待处理数量={}，并发线程数={}", pendingList.size(), CONCURRENT_THREADS);
         AtomicInteger successCount = new AtomicInteger(0);
 
-        CompletableFuture.allOf(pendingList.stream()
+        List<CompletableFuture<Void>> futures = pendingList.stream()
                 .map(record -> CompletableFuture.runAsync(() -> {
                     try {
                         extractSingle(record);
@@ -101,7 +99,10 @@ public class ExtractSchemaService {
                                 record.getId(), record.getReportId(), record.getBizId(), e.getMessage(), e);
                         reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
                     }
-                }, extractExecutor)).toArray(CompletableFuture[]::new)).join();
+                }, extractExecutor))
+                .collect(java.util.stream.Collectors.toList());
+
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
         log.info("批量提取完成，总数={}，成功={}", pendingList.size(), successCount.get());
         return successCount.get();
@@ -186,28 +187,12 @@ public class ExtractSchemaService {
     }
 
     /**
-     * 获取BP上下文 markdown（从 getBpContext 接口返回的 Map 中提取）
+     * 获取BP上下文 markdown
      */
     private String fetchBpContext(Long taskId) {
         try {
-            Map<String, Object> data = fetchBpContextMap(taskId);
-            if (data != null) {
-                Object md = data.get("markdown");
-                return md != null ? md.toString() : null;
-            }
-        } catch (Exception e) {
-            log.error("获取BP上下文失败，taskId={}, error={}", taskId, e.getMessage(), e);
-        }
-        return null;
-    }
-
-    /**
-     * 获取BP上下文完整 Map（包含 markdown / corpId / groupId 等元数据）
-     */
-    public Map<String, Object> fetchBpContextMap(Long taskId) {
-        try {
-            Result<Map<String, Object>> result = pmsFeign.getBpContext(taskId);
-            if (result != null && result.getData() != null) {
+            Result<String> result = pmsFeign.getBpContext(taskId);
+            if (result != null && StringUtils.isNotBlank(result.getData())) {
                 return result.getData();
             }
         } catch (Exception e) {

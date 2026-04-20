@@ -1,11 +1,12 @@
 package com.xgjktech.reportrelation.service;
 
 import java.time.LocalDateTime;
-import java.util.Map;
 
 import javax.annotation.Resource;
 
 import com.alibaba.fastjson.JSON;
+import com.xgjktech.cloud.common.Result;
+import com.xgjktech.reportrelation.base.feign.PmsFeign;
 import com.xgjktech.reportrelation.base.param.ReportObjectParam;
 import com.xgjktech.reportrelation.data.entity.ReportRelationBusinessEntity;
 import com.xgjktech.reportrelation.data.vo.ReportObjectChangedVO;
@@ -41,7 +42,7 @@ public class ReportRelationEventService {
     private ReportRelationBusinessService reportRelationBusinessService;
 
     @Resource
-    private ExtractSchemaService extractSchemaService;
+    private PmsFeign pmsFeign;
 
     /**
      * 监听汇报关联业务对象变更消息
@@ -75,9 +76,6 @@ public class ReportRelationEventService {
         }
     }
 
-    /**
-     * 处理新增汇报关联（通过 getBpContext 获取 corpId）
-     */
     private void handleAddRelation(ReportObjectChangedVO vo, ReportObjectParam obj) {
         try {
             Long bpTaskId = Long.parseLong(obj.getBizId());
@@ -89,11 +87,7 @@ public class ReportRelationEventService {
                 return;
             }
 
-            Map<String, Object> bpContext = extractSchemaService.fetchBpContextMap(bpTaskId);
-            Long corpId = null;
-            if (bpContext != null && bpContext.get("corpId") != null) {
-                corpId = Long.valueOf(bpContext.get("corpId").toString());
-            }
+            Long corpId = fetchTaskCorpId(bpTaskId);
 
             ReportRelationBusinessEntity entity = new ReportRelationBusinessEntity();
             entity.setReportId(vo.getReportId());
@@ -117,6 +111,16 @@ public class ReportRelationEventService {
         } catch (Exception e) {
             log.error("处理新增汇报关联异常，reportId={}, bizId={}, error={}",
                     vo.getReportId(), obj.getBizId(), e.getMessage(), e);
+        }
+    }
+
+    private Long fetchTaskCorpId(Long taskId) {
+        try {
+            Result<Long> result = pmsFeign.getTaskCorpId(taskId);
+            return (result != null) ? result.getData() : null;
+        } catch (Exception e) {
+            log.warn("获取任务corpId失败，taskId={}", taskId, e);
+            return null;
         }
     }
 

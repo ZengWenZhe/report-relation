@@ -1,10 +1,7 @@
 package com.xgjktech.reportrelation.controller;
 
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -12,6 +9,7 @@ import javax.annotation.Resource;
 
 import com.xgjktech.cloud.common.Result;
 import com.xgjktech.reportrelation.base.feign.PmsFeign;
+import com.xgjktech.reportrelation.base.model.TaskRelationReportExportVO;
 import com.xgjktech.reportrelation.data.entity.ReportRelationBusinessEntity;
 import com.xgjktech.reportrelation.service.ReportRelationBusinessService;
 
@@ -26,13 +24,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 import lombok.extern.slf4j.Slf4j;
 
-/**
- * 历史数据迁移接口
- * 将pms的bp_task_relation_report历史数据迁移到report_relation_business
- *
- * @author zengwenzhe
- * @since 2026-04-20
- */
 @Slf4j
 @Api(tags = "数据迁移")
 @RestController
@@ -60,46 +51,43 @@ public class DataMigrationController {
 
         try {
             while (true) {
-                Result<List<Map<String, Object>>> result = pmsFeign.exportRelationReports(page, pageSize);
+                Result<List<TaskRelationReportExportVO>> result = pmsFeign.exportRelationReports(page, pageSize);
                 if (result == null || CollectionUtils.isEmpty(result.getData())) {
                     break;
                 }
 
-                List<Map<String, Object>> dataList = result.getData();
+                List<TaskRelationReportExportVO> dataList = result.getData();
                 totalCount += dataList.size();
                 log.info("拉取第{}页，本页{}条", page, dataList.size());
 
-                List<Map<String, Object>> validList = dataList.stream()
-                        .filter(item -> toLong(item.get("bizId")) != null && toLong(item.get("taskId")) != null)
+                List<TaskRelationReportExportVO> validList = dataList.stream()
+                        .filter(vo -> vo.getBizId() != null && vo.getTaskId() != null)
                         .collect(Collectors.toList());
                 skipCount += (dataList.size() - validList.size());
 
                 if (!validList.isEmpty()) {
                     Set<String> existingKeys = reportRelationBusinessService.batchCheckExists(
                             validList.stream()
-                                    .map(item -> toLong(item.get("bizId")) + ":" + BIZ_TYPE_BP + ":" + toLong(item.get("taskId")))
+                                    .map(vo -> vo.getBizId() + ":" + BIZ_TYPE_BP + ":" + vo.getTaskId())
                                     .collect(Collectors.toList()));
 
                     List<ReportRelationBusinessEntity> toInsert = new ArrayList<>();
-                    for (Map<String, Object> item : validList) {
-                        Long reportId = toLong(item.get("bizId"));
-                        Long taskId = toLong(item.get("taskId"));
-                        String key = reportId + ":" + BIZ_TYPE_BP + ":" + taskId;
-
+                    for (TaskRelationReportExportVO vo : validList) {
+                        String key = vo.getBizId() + ":" + BIZ_TYPE_BP + ":" + vo.getTaskId();
                         if (existingKeys.contains(key)) {
                             skipCount++;
                             continue;
                         }
 
                         ReportRelationBusinessEntity entity = new ReportRelationBusinessEntity();
-                        entity.setReportId(reportId);
+                        entity.setReportId(vo.getBizId());
                         entity.setBizType(BIZ_TYPE_BP);
-                        entity.setBizId(taskId);
+                        entity.setBizId(vo.getTaskId());
                         entity.setExtractStatus(0);
-                        entity.setReportCreateTime(toLocalDateTime(item.get("businessTime")));
-                        entity.setRelationTime(toLocalDateTime(item.get("relationTime")));
+                        entity.setReportCreateTime(vo.getBusinessTime());
+                        entity.setRelationTime(vo.getRelationTime());
                         entity.setDeleted(false);
-                        entity.setCorpId(toLong(item.get("corpId")));
+                        entity.setCorpId(vo.getCorpId());
                         toInsert.add(entity);
                     }
 
@@ -123,34 +111,6 @@ public class DataMigrationController {
             log.error("迁移历史数据失败，已处理到第{}页，error={}", page, e.getMessage(), e);
             String msg = String.format("迁移中断：已成功=%d, 已跳过=%d, 错误=%s", successCount, skipCount, e.getMessage());
             return Result.success(msg);
-        }
-    }
-
-    private Long toLong(Object val) {
-        if (val == null) {
-            return null;
-        }
-        if (val instanceof Number) {
-            return ((Number) val).longValue();
-        }
-        try {
-            return Long.valueOf(val.toString());
-        } catch (NumberFormatException e) {
-            return null;
-        }
-    }
-
-    private LocalDateTime toLocalDateTime(Object val) {
-        if (val == null) {
-            return null;
-        }
-        if (val instanceof LocalDateTime) {
-            return (LocalDateTime) val;
-        }
-        try {
-            return LocalDateTime.parse(val.toString(), DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-        } catch (Exception e) {
-            return null;
         }
     }
 }

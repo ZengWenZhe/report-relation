@@ -1,9 +1,9 @@
 package com.xgjktech.reportrelation.base.feign;
 
 import java.util.List;
-import java.util.Map;
 
 import com.xgjktech.cloud.common.Result;
+import com.xgjktech.reportrelation.base.model.TaskRelationReportExportVO;
 
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -19,10 +19,13 @@ import org.springframework.web.bind.annotation.RequestParam;
 public interface PmsFeign {
 
     @GetMapping("/inner/task/getBpContext")
-    Result<Map<String, Object>> getBpContext(@RequestParam("taskId") Long taskId);
+    Result<String> getBpContext(@RequestParam("taskId") Long taskId);
 
     @GetMapping("/inner/task/exportRelationReports")
-    Result<List<Map<String, Object>>> exportRelationReports(
+    Result<List<TaskRelationReportExportVO>> exportRelationReports(
             @RequestParam("page") int page,
             @RequestParam("pageSize") int pageSize);
+
+    @GetMapping("/inner/task/getTaskCorpId")
+    Result<Long> getTaskCorpId(@RequestParam("taskId") Long taskId);
 }
