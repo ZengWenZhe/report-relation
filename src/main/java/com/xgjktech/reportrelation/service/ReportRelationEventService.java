@@ -1,6 +1,7 @@
 package com.xgjktech.reportrelation.service;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 
 import javax.annotation.Resource;
 
@@ -39,6 +40,9 @@ public class ReportRelationEventService {
     @Resource
     private ReportRelationBusinessService reportRelationBusinessService;
 
+    @Resource
+    private ExtractSchemaService extractSchemaService;
+
     /**
      * 监听汇报关联业务对象变更消息
      */
@@ -72,7 +76,7 @@ public class ReportRelationEventService {
     }
 
     /**
-     * 处理新增汇报关联
+     * 处理新增汇报关联（通过 getBpContext 获取 corpId）
      */
     private void handleAddRelation(ReportObjectChangedVO vo, ReportObjectParam obj) {
         try {
@@ -85,6 +89,12 @@ public class ReportRelationEventService {
                 return;
             }
 
+            Map<String, Object> bpContext = extractSchemaService.fetchBpContextMap(bpTaskId);
+            Long corpId = null;
+            if (bpContext != null && bpContext.get("corpId") != null) {
+                corpId = Long.valueOf(bpContext.get("corpId").toString());
+            }
+
             ReportRelationBusinessEntity entity = new ReportRelationBusinessEntity();
             entity.setReportId(vo.getReportId());
             entity.setReportName(vo.getMain());
@@ -95,11 +105,12 @@ public class ReportRelationEventService {
                     vo.getReportTime() != null ? vo.getReportTime().toLocalDateTime() : null);
             entity.setRelationTime(LocalDateTime.now());
             entity.setDeleted(false);
+            entity.setCorpId(corpId);
             entity.setCreateBy(vo.getCurrentEmpId());
             entity.setUpdateBy(vo.getCurrentEmpId());
 
             reportRelationBusinessService.save(entity);
-            log.info("新增汇报关联成功，reportId={}, bpTaskId={}", vo.getReportId(), bpTaskId);
+            log.info("新增汇报关联成功，reportId={}, bpTaskId={}, corpId={}", vo.getReportId(), bpTaskId, corpId);
 
         } catch (NumberFormatException e) {
             log.error("BP任务ID格式错误，bizId={}", obj.getBizId());

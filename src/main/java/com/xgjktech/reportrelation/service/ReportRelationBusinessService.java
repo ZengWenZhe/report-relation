@@ -1,11 +1,17 @@
 package com.xgjktech.reportrelation.service;
 
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import com.xgjktech.common.base.AbstractBaseService;
 import com.xgjktech.reportrelation.data.entity.ReportRelationBusinessEntity;
 import com.xgjktech.reportrelation.mapper.ReportRelationBusinessMapper;
 
+import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.collections4.ListUtils;
 import org.springframework.stereotype.Service;
 
 import lombok.extern.slf4j.Slf4j;
@@ -81,5 +87,35 @@ public class ReportRelationBusinessService extends AbstractBaseService<ReportRel
                 .set(ReportRelationBusinessEntity::getExtractStatus, status)
                 .set(extractSchema != null, ReportRelationBusinessEntity::getExtractSchema, extractSchema)
                 .update();
+    }
+
+    /**
+     * 批量检查已存在的关联关系，返回已存在的 key 集合。
+     * key 格式：reportId:bizType:bizId
+     * 使用分片查询避免 IN 子句过长。
+     */
+    public Set<String> batchCheckExists(Collection<String> keys) {
+        if (CollectionUtils.isEmpty(keys)) {
+            return Collections.emptySet();
+        }
+
+        Set<Long> reportIds = keys.stream()
+                .map(k -> Long.valueOf(k.split(":")[0]))
+                .collect(Collectors.toSet());
+
+        List<List<Long>> partitions = ListUtils.partition(
+                new java.util.ArrayList<>(reportIds), 500);
+
+        return partitions.stream()
+                .flatMap(batch -> this.lambdaQuery()
+                        .select(ReportRelationBusinessEntity::getReportId,
+                                ReportRelationBusinessEntity::getBizType,
+                                ReportRelationBusinessEntity::getBizId)
+                        .in(ReportRelationBusinessEntity::getReportId, batch)
+                        .eq(ReportRelationBusinessEntity::getDeleted, false)
+                        .list()
+                        .stream())
+                .map(e -> e.getReportId() + ":" + e.getBizType() + ":" + e.getBizId())
+                .collect(Collectors.toSet());
     }
 }

@@ -2,13 +2,19 @@ package com.xgjktech.reportrelation.service;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
+import javax.annotation.PreDestroy;
 import javax.annotation.Resource;
 
 import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONObject;
 import com.xgjktech.cloud.common.Result;
 import com.xgjktech.reportrelation.base.feign.FilegptFeign;
 import com.xgjktech.reportrelation.base.feign.PmsFeign;
@@ -38,9 +44,13 @@ public class ExtractSchemaService {
 
     private static final int AI_TYPE = 14;
 
-    private static final String BIZ_CODE = "report_extract_schema";
+    private static final String BIZ_CODE = "bp_report_relation_extract";
 
-    private static final int DEFAULT_BATCH_SIZE = 50;
+    private static final int DEFAULT_BATCH_SIZE = 20;
+
+    private static final int CONCURRENT_THREADS = 5;
+
+    private final ExecutorService extractExecutor = Executors.newFixedThreadPool(CONCURRENT_THREADS);
 
     @Resource
     private ReportRelationBusinessService reportRelationBusinessService;
@@ -57,8 +67,13 @@ public class ExtractSchemaService {
     @Resource
     private FilegptFeign filegptFeign;
 
+    @PreDestroy
+    public void shutdown() {
+        extractExecutor.shutdown();
+    }
+
     /**
-     * 批量提取（供定时任务或手动触发调用）
+     * 批量提取（并发执行，线程数=CONCURRENT_THREADS）
      *
      * @param limit 本次最大处理条数，0或负数使用默认值
      * @return 成功提取的数量
@@ -73,22 +88,23 @@ public class ExtractSchemaService {
             return 0;
         }
 
-        log.info("开始批量提取，待处理数量={}", pendingList.size());
-        int successCount = 0;
+        log.info("开始批量提取，待处理数量={}，并发线程数={}", pendingList.size(), CONCURRENT_THREADS);
+        AtomicInteger successCount = new AtomicInteger(0);
 
-        for (ReportRelationBusinessEntity record : pendingList) {
-            try {
-                extractSingle(record);
-                successCount++;
-            } catch (Exception e) {
-                log.error("提取失败，id={}, reportId={}, bizId={}, error={}",
-                        record.getId(), record.getReportId(), record.getBizId(), e.getMessage(), e);
-                reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
-            }
-        }
+        CompletableFuture.allOf(pendingList.stream()
+                .map(record -> CompletableFuture.runAsync(() -> {
+                    try {
+                        extractSingle(record);
+                        successCount.incrementAndGet();
+                    } catch (Exception e) {
+                        log.error("提取失败，id={}, reportId={}, bizId={}, error={}",
+                                record.getId(), record.getReportId(), record.getBizId(), e.getMessage(), e);
+                        reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
+                    }
+                }, extractExecutor)).toArray(CompletableFuture[]::new)).join();
 
-        log.info("批量提取完成，总数={}，成功={}", pendingList.size(), successCount);
-        return successCount;
+        log.info("批量提取完成，总数={}，成功={}", pendingList.size(), successCount.get());
+        return successCount.get();
     }
 
     /**
@@ -170,13 +186,29 @@ public class ExtractSchemaService {
     }
 
     /**
-     * 获取BP上下文信息
+     * 获取BP上下文 markdown（从 getBpContext 接口返回的 Map 中提取）
      */
     private String fetchBpContext(Long taskId) {
         try {
-            Result<JSONObject> result = pmsFeign.getBpContext(taskId);
+            Map<String, Object> data = fetchBpContextMap(taskId);
+            if (data != null) {
+                Object md = data.get("markdown");
+                return md != null ? md.toString() : null;
+            }
+        } catch (Exception e) {
+            log.error("获取BP上下文失败，taskId={}, error={}", taskId, e.getMessage(), e);
+        }
+        return null;
+    }
+
+    /**
+     * 获取BP上下文完整 Map（包含 markdown / corpId / groupId 等元数据）
+     */
+    public Map<String, Object> fetchBpContextMap(Long taskId) {
+        try {
+            Result<Map<String, Object>> result = pmsFeign.getBpContext(taskId);
             if (result != null && result.getData() != null) {
-                return result.getData().toJSONString();
+                return result.getData();
             }
         } catch (Exception e) {
             log.error("获取BP上下文失败，taskId={}, error={}", taskId, e.getMessage(), e);

@@ -6,6 +6,7 @@ com/xgjktech/reportrelation/controller/DataMigrationController.class
 com/xgjktech/reportrelation/base/model/ReportSimpleInfoBatchVO.class
 com/xgjktech/reportrelation/controller/ReportRelationController.class
 com/xgjktech/reportrelation/base/param/ReportObjectParam.class
+com/xgjktech/reportrelation/service/ExtractPromptConfigService$CacheEntry.class
 com/xgjktech/reportrelation/base/feign/PmsFeign.class
 com/xgjktech/reportrelation/base/param/ReportSimpleInfoBatchParam.class
 com/xgjktech/reportrelation/service/ReportRelationEventService.class

@@ -1,15 +1,12 @@
 package com.xgjktech.reportrelation.base.feign;
 
 import java.util.List;
+import java.util.Map;
 
-import com.alibaba.fastjson.JSONObject;
 import com.xgjktech.cloud.common.Result;
 
-import io.swagger.annotations.ApiOperation;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 
 /**
@@ -21,11 +18,11 @@ import org.springframework.web.bind.annotation.RequestParam;
 @FeignClient(name = "pms")
 public interface PmsFeign {
 
-    @ApiOperation("根据BP任务ID获取BP上下文信息（目标/KR/举措）")
-    @GetMapping("/inner/bp/task/getBpContext")
-    Result<JSONObject> getBpContext(@RequestParam("taskId") Long taskId);
+    @GetMapping("/inner/task/getBpContext")
+    Result<Map<String, Object>> getBpContext(@RequestParam("taskId") Long taskId);
 
-    @ApiOperation("导出历史关联数据（type=report）")
-    @PostMapping("/inner/bp/taskRelationReport/exportAll")
-    Result<List<JSONObject>> exportRelationReports(@RequestBody JSONObject param);
+    @GetMapping("/inner/task/exportRelationReports")
+    Result<List<Map<String, Object>>> exportRelationReports(
+            @RequestParam("page") int page,
+            @RequestParam("pageSize") int pageSize);
 }
