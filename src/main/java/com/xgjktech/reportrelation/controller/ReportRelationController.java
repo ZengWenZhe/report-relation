@@ -44,23 +44,15 @@ public class ReportRelationController {
         return Result.success(reportRelationBusinessService.listByBizId(bizType, bizId));
     }
 
-    @ApiOperation("手动触发批量结构化提取")
-    @PostMapping("/extract/batch")
-    public Result<Integer> batchExtract(
-            @ApiParam("本次最大处理条数") @RequestParam(defaultValue = "50") int limit) {
-        int count = extractSchemaService.batchExtract(limit);
-        return Result.success(count);
+    @ApiOperation("根据批量业务ID重新生成结构化extractSchema")
+    @PostMapping("/reExtractSchema")
+    public Result<Integer> reExtractSchema(
+            @ApiParam("业务类型") @RequestParam(defaultValue = "BP") String bizType,
+            @ApiParam("业务ID列表") @RequestParam List<Long> bizIds) {
+        if (bizIds == null || bizIds.isEmpty()) {
+            throw new BusinessException("bizIds不能为空");
+        }
+        return Result.success(extractSchemaService.reExtractByBizIds(bizType, bizIds));
     }
 
-    @ApiOperation("手动触发单条结构化提取")
-    @PostMapping("/extract/single")
-    public Result<Boolean> extractSingle(
-            @ApiParam("关联记录ID") @RequestParam Long id) {
-        ReportRelationBusinessEntity record = reportRelationBusinessService.getById(id);
-        if (record == null) {
-            throw new BusinessException("记录不存在");
-        }
-        extractSchemaService.extractSingle(record);
-        return Result.success(true);
-    }
 }

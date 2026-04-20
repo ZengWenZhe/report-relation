@@ -1,5 +1,6 @@
 package com.xgjktech.reportrelation.service;
 
+import java.sql.Timestamp;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -86,7 +87,25 @@ public class ReportRelationBusinessService extends AbstractBaseService<ReportRel
                 .eq(ReportRelationBusinessEntity::getId, id)
                 .set(ReportRelationBusinessEntity::getExtractStatus, status)
                 .set(extractSchema != null, ReportRelationBusinessEntity::getExtractSchema, extractSchema)
+                .set( ReportRelationBusinessEntity::getUpdateTime, new Timestamp(System.currentTimeMillis()))
                 .update();
+    }
+
+    /**
+     * 根据批量bizId查询所有未删除的关联记录
+     */
+    public List<ReportRelationBusinessEntity> listByBizIds(String bizType, Collection<Long> bizIds) {
+        if (CollectionUtils.isEmpty(bizIds)) {
+            return Collections.emptyList();
+        }
+        return ListUtils.partition(new java.util.ArrayList<>(bizIds), 500).stream()
+                .flatMap(batch -> this.lambdaQuery()
+                        .eq(ReportRelationBusinessEntity::getBizType, bizType)
+                        .in(ReportRelationBusinessEntity::getBizId, batch)
+                        .eq(ReportRelationBusinessEntity::getDeleted, false)
+                        .list()
+                        .stream())
+                .collect(Collectors.toList());
     }
 
     /**

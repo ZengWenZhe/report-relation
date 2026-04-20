@@ -1,5 +1,6 @@
 package com.xgjktech.reportrelation.service;
 
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -8,6 +9,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import javax.annotation.PreDestroy;
 import javax.annotation.Resource;
@@ -40,7 +42,7 @@ import lombok.extern.slf4j.Slf4j;
 @Service
 public class ExtractSchemaService {
 
-    private static final int AI_TYPE = 14;
+    private static final int AI_TYPE = 92;
 
     private static final String BIZ_CODE = "report_extract_schema";
 
@@ -89,7 +91,7 @@ public class ExtractSchemaService {
         log.info("开始批量提取，待处理数量={}，并发线程数={}", pendingList.size(), CONCURRENT_THREADS);
         AtomicInteger successCount = new AtomicInteger(0);
 
-        List<CompletableFuture<Void>> futures = pendingList.stream()
+        CompletableFuture.allOf(pendingList.stream()
                 .map(record -> CompletableFuture.runAsync(() -> {
                     try {
                         extractSingle(record);
@@ -99,12 +101,44 @@ public class ExtractSchemaService {
                                 record.getId(), record.getReportId(), record.getBizId(), e.getMessage(), e);
                         reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
                     }
-                }, extractExecutor))
-                .collect(java.util.stream.Collectors.toList());
-
-        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+                }, extractExecutor)).toArray(CompletableFuture[]::new)).join();
 
         log.info("批量提取完成，总数={}，成功={}", pendingList.size(), successCount.get());
+        return successCount.get();
+    }
+
+    /**
+     * 根据批量业务ID重新生成结构化extractSchema
+     *
+     * @param bizType 业务类型
+     * @param bizIds  业务ID集合
+     * @return 成功提取的数量
+     */
+    public int reExtractByBizIds(String bizType, Collection<Long> bizIds) {
+        List<ReportRelationBusinessEntity> records =
+                reportRelationBusinessService.listByBizIds(bizType, bizIds);
+
+        if (records.isEmpty()) {
+            log.info("根据bizIds未查到关联记录，bizType={}, bizIds={}", bizType, bizIds);
+            return 0;
+        }
+
+        log.info("开始根据bizIds重新提取extractSchema，记录数={}，并发线程数={}", records.size(), CONCURRENT_THREADS);
+        AtomicInteger successCount = new AtomicInteger(0);
+
+        CompletableFuture.allOf(records.stream()
+                .map(record -> CompletableFuture.runAsync(() -> {
+                    try {
+                        extractSingle(record);
+                        successCount.incrementAndGet();
+                    } catch (Exception e) {
+                        log.error("重新提取失败，id={}, reportId={}, bizId={}, error={}",
+                                record.getId(), record.getReportId(), record.getBizId(), e.getMessage(), e);
+                        reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
+                    }
+                }, extractExecutor)).toArray(CompletableFuture[]::new)).join();
+
+        log.info("根据bizIds重新提取完成，总数={}，成功={}", records.size(), successCount.get());
         return successCount.get();
     }
 
