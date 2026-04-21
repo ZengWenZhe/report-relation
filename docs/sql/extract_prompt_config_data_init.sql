@@ -2,9 +2,9 @@
 -- 汇报结构化提取配置初始化数据
 -- ============================================================
 
-DELETE FROM report_extract_config WHERE config_code = 'REPORT_EXTRACT_SCHEMA';
+DELETE FROM report_extract_config WHERE config_code = 'BP_REPORT_EXTRACT_SCHEMA';
 INSERT INTO report_extract_config (id, config_code, config_name, config_content, biz_type, version, status, deleted, remark)
-VALUES (1, 'REPORT_EXTRACT_SCHEMA', '汇报结构化提取',
+VALUES (1, 'BP_REPORT_EXTRACT_SCHEMA', 'BP汇报结构化提取',
 '你是一个严格的企业战略执行分析助手。你的任务是判断一篇工作汇报是否与指定的BP举措有实质性工作进展关系，如果有则进行结构化提取，输出标准 JSON。
 
 ## 核心原则（必须严格遵守，违反任何一条即为失败）

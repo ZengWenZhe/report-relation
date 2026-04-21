@@ -32,7 +32,7 @@ import lombok.extern.slf4j.Slf4j;
 @Service
 public class ExtractSchemaService {
 
-    private static final int AI_TYPE = 92;
+    private static final int AI_TYPE = 106;
 
     private static final String BIZ_CODE = "report_extract_schema";
 
@@ -56,23 +56,53 @@ public class ExtractSchemaService {
      * @param bizContext    业务上下文JSON(由各策略提供, 用于替换模板中的占位符)
      * @param contextPlaceholder 模板中业务上下文的占位符名称
      */
+    /**
+     * 自行获取汇报内容的提取入口
+     */
     public void extractSingle(ReportRelationBusinessEntity record,
                               ExtractConfigCodeEnum configCode,
                               String bizContext,
                               String contextPlaceholder) {
+        extractSingle(record, configCode, bizContext, contextPlaceholder, null);
+    }
+
+    /**
+     * 可复用已有汇报内容的提取入口
+     *
+     * @param preloadedContent 预加载的汇报内容，null 时自行拉取
+     */
+    public void extractSingle(ReportRelationBusinessEntity record,
+                              ExtractConfigCodeEnum configCode,
+                              String bizContext,
+                              String contextPlaceholder,
+                              String preloadedContent) {
         log.info("开始结构化提取，id={}, reportId={}, bizId={}, bizType={}",
                 record.getId(), record.getReportId(), record.getBizId(), record.getBizType());
 
         reportRelationBusinessService.updateExtractStatus(record.getId(), 1, null);
 
-        String reportContent = fetchReportContent(record.getReportId());
+        try {
+            doExtract(record, configCode, bizContext, contextPlaceholder, preloadedContent);
+        } catch (Exception e) {
+            log.error("结构化提取异常，id={}, reportId={}, error={}",
+                    record.getId(), record.getReportId(), e.getMessage(), e);
+            reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
+        }
+    }
+
+    private void doExtract(ReportRelationBusinessEntity record,
+                           ExtractConfigCodeEnum configCode,
+                           String bizContext,
+                           String contextPlaceholder,
+                           String preloadedContent) {
+        String reportContent = preloadedContent != null ? preloadedContent : fetchReportContent(record.getReportId());
         if (StringUtils.isBlank(reportContent)) {
             log.warn("汇报内容为空，跳过提取，reportId={}", record.getReportId());
             reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
             return;
         }
 
-        String promptTemplate = reportExtractConfigService.getConfigContentByCode(configCode);
+        String promptTemplate = reportExtractConfigService.getConfigContentByCode(configCode, record.getBizType());
         String prompt = promptTemplate
                 .replace("{{REPORT_CONTENT}}", reportContent)
                 .replace(contextPlaceholder, StringUtils.defaultString(bizContext, "{}"));

@@ -44,6 +44,10 @@ public class ReportRelationEventService {
 
         try {
             ReportObjectChangedVO vo = JSON.parseObject(message, ReportObjectChangedVO.class);
+            if (vo == null) {
+                log.warn("消息解析为null，跳过, message={}", message);
+                return;
+            }
             if (vo.getRecordId() == null) {
                 vo.setRecordId(vo.getReportId());
             }

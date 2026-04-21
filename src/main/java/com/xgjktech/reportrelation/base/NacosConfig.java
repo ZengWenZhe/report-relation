@@ -25,4 +25,7 @@ public class NacosConfig {
 
     @Value("${scheduled.job.enable:true}")
     private Boolean jobEnable;
+
+    @Value("${extract.concurrent.threads:4}")
+    private Integer extractConcurrentThreads;
 }

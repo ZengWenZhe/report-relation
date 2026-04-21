@@ -1,8 +1,6 @@
 package com.xgjktech.reportrelation.controller;
 
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.annotation.Resource;
 
@@ -11,7 +9,6 @@ import com.xgjktech.cloud.common.exception.BusinessException;
 import com.xgjktech.reportrelation.data.entity.ReportRelationBusinessEntity;
 import com.xgjktech.reportrelation.service.ReportExtractQueueService;
 import com.xgjktech.reportrelation.service.ReportRelationBusinessService;
-import com.xgjktech.reportrelation.strategy.ExtractStrategy;
 import com.xgjktech.reportrelation.strategy.ExtractStrategyRouter;
 
 import io.swagger.annotations.Api;
@@ -45,7 +42,7 @@ public class ReportRelationController {
         return Result.success(reportRelationBusinessService.listByBizId(bizType, bizId));
     }
 
-    @ApiOperation("根据批量业务ID重新生成结构化extractSchema")
+    @ApiOperation("根据批量业务ID重新触发结构化提取（入队由定时任务执行）")
     @PostMapping("/reExtractSchema")
     public Result<Integer> reExtractSchema(
             @ApiParam("业务类型") @RequestParam(defaultValue = "BP") String bizType,
@@ -54,8 +51,7 @@ public class ReportRelationController {
             throw new BusinessException("bizIds不能为空");
         }
 
-        ExtractStrategy strategy = extractStrategyRouter.getStrategy(bizType);
-        if (strategy == null) {
+        if (!extractStrategyRouter.hasStrategy(bizType)) {
             throw new BusinessException("不支持的业务类型：" + bizType);
         }
 
@@ -65,18 +61,12 @@ public class ReportRelationController {
             return Result.success(0);
         }
 
-        AtomicInteger successCount = new AtomicInteger(0);
-        CompletableFuture.allOf(records.stream()
-                .map(record -> CompletableFuture.runAsync(() -> {
-                    try {
-                        strategy.extract(record);
-                        successCount.incrementAndGet();
-                    } catch (Exception e) {
-                        reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
-                    }
-                })).toArray(CompletableFuture[]::new)).join();
+        records.stream()
+                .map(ReportRelationBusinessEntity::getReportId)
+                .distinct()
+                .forEach(reportExtractQueueService::enqueue);
 
-        return Result.success(successCount.get());
+        return Result.success(records.size());
     }
 
     @ApiOperation("查询提取队列大小")

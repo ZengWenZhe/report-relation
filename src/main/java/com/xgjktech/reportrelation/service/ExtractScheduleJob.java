@@ -3,8 +3,10 @@ package com.xgjktech.reportrelation.service;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -28,10 +30,6 @@ public class ExtractScheduleJob {
 
     private static final int BATCH_SIZE = 50;
 
-    private static final int CONCURRENT_THREADS = 12;
-
-    private final ExecutorService extractExecutor = Executors.newFixedThreadPool(CONCURRENT_THREADS);
-
     @Resource
     private NacosConfig nacosConfig;
 
@@ -44,12 +42,29 @@ public class ExtractScheduleJob {
     @Resource
     private ExtractStrategyRouter extractStrategyRouter;
 
+    @Resource
+    private ExtractSchemaService extractSchemaService;
+
+    private volatile ExecutorService extractExecutor;
+
+    private volatile int currentThreads = 0;
+
     @PreDestroy
     public void shutdown() {
-        extractExecutor.shutdown();
+        if (extractExecutor != null) {
+            extractExecutor.shutdown();
+            try {
+                if (!extractExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+                    extractExecutor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                extractExecutor.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+        }
     }
 
-    @Scheduled(fixedDelayString = "${extract.schedule.fixedDelay:5000}")
+    @Scheduled(fixedDelayString = "${extract.schedule.fixedDelay:1800000}")
     public void execute() {
         if (!Boolean.TRUE.equals(nacosConfig.getJobEnable())) {
             return;
@@ -64,39 +79,66 @@ public class ExtractScheduleJob {
 
         List<ReportRelationBusinessEntity> records = reportRelationBusinessService.listByReportIds(reportIds);
         if (records.isEmpty()) {
-            log.info("根据reportIds未查到关联记录，reportIds={}", reportIds);
+            log.warn("所有reportId在DB中无关联记录，丢弃不回队：{}", reportIds);
             return;
         }
 
-        Map<String, List<ReportRelationBusinessEntity>> grouped = records.stream()
-                .collect(Collectors.groupingBy(ReportRelationBusinessEntity::getBizType));
-
+        ExecutorService executor = getOrRebuildExecutor();
         AtomicInteger successCount = new AtomicInteger(0);
         AtomicInteger failCount = new AtomicInteger(0);
 
-        CompletableFuture.allOf(grouped.entrySet().stream()
-                .flatMap(entry -> {
-                    String bizType = entry.getKey();
-                    ExtractStrategy strategy = extractStrategyRouter.getStrategy(bizType);
-                    if (strategy == null) {
-                        log.warn("bizType={}无对应策略，跳过{}条", bizType, entry.getValue().size());
-                        return java.util.stream.Stream.empty();
+        Map<Long, List<ReportRelationBusinessEntity>> byReportId = records.stream()
+                .collect(Collectors.groupingBy(ReportRelationBusinessEntity::getReportId));
+
+        ConcurrentHashMap<Long, String> contentCache = new ConcurrentHashMap<>();
+
+        CompletableFuture.allOf(byReportId.entrySet().stream()
+                .map(reportGroup -> CompletableFuture.runAsync(() -> {
+                    Long reportId = reportGroup.getKey();
+                    List<ReportRelationBusinessEntity> groupRecords = reportGroup.getValue();
+
+                    String reportContent = contentCache.computeIfAbsent(reportId,
+                            id -> extractSchemaService.fetchReportContent(id));
+
+                    for (ReportRelationBusinessEntity record : groupRecords) {
+                        ExtractStrategy strategy = extractStrategyRouter.getStrategy(record.getBizType());
+                        if (strategy == null) {
+                            log.warn("bizType={}无对应策略，跳过record id={}", record.getBizType(), record.getId());
+                            continue;
+                        }
+                        try {
+                            strategy.extract(record, reportContent);
+                            successCount.incrementAndGet();
+                        } catch (Exception e) {
+                            failCount.incrementAndGet();
+                            log.error("提取失败，id={}, reportId={}, bizType={}, error={}",
+                                    record.getId(), record.getReportId(), record.getBizType(), e.getMessage(), e);
+                            reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
+                            reportExtractQueueService.enqueue(record.getReportId());
+                        }
                     }
-                    return entry.getValue().stream()
-                            .map(record -> CompletableFuture.runAsync(() -> {
-                                try {
-                                    strategy.extract(record);
-                                    successCount.incrementAndGet();
-                                } catch (Exception e) {
-                                    failCount.incrementAndGet();
-                                    log.error("提取失败，id={}, reportId={}, bizType={}, error={}",
-                                            record.getId(), record.getReportId(), bizType, e.getMessage(), e);
-                                    reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
-                                }
-                            }, extractExecutor));
-                })
+                }, executor))
                 .toArray(CompletableFuture[]::new)).join();
 
-        log.info("定时提取完成，总记录={}，成功={}，失败={}", records.size(), successCount.get(), failCount.get());
+        log.info("定时提取完成，总记录={}，去重reportId={}，成功={}，失败={}",
+                records.size(), byReportId.size(), successCount.get(), failCount.get());
+    }
+
+    private ExecutorService getOrRebuildExecutor() {
+        int configThreads = nacosConfig.getExtractConcurrentThreads() != null
+                ? nacosConfig.getExtractConcurrentThreads() : 4;
+        if (extractExecutor == null || configThreads != currentThreads) {
+            synchronized (this) {
+                if (extractExecutor == null || configThreads != currentThreads) {
+                    if (extractExecutor != null) {
+                        extractExecutor.shutdown();
+                        log.info("线程池大小变更 {} -> {}, 重建线程池", currentThreads, configThreads);
+                    }
+                    extractExecutor = Executors.newFixedThreadPool(configThreads);
+                    currentThreads = configThreads;
+                }
+            }
+        }
+        return extractExecutor;
     }
 }

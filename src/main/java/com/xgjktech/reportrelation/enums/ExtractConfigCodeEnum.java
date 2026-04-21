@@ -5,7 +5,7 @@ import lombok.Getter;
 @Getter
 public enum ExtractConfigCodeEnum {
 
-    REPORT_EXTRACT_SCHEMA("REPORT_EXTRACT_SCHEMA", "汇报结构化提取");
+    BP_REPORT_EXTRACT_SCHEMA("BP_REPORT_EXTRACT_SCHEMA", "BP汇报结构化提取");
 
     private final String code;
 

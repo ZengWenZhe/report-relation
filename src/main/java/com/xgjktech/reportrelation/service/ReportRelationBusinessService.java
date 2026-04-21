@@ -62,19 +62,7 @@ public class ReportRelationBusinessService extends AbstractBaseService<ReportRel
                 .list();
     }
 
-    /**
-     * 查询待提取或提取失败的记录
-     *
-     * @param limit 查询数量限制
-     */
-    public List<ReportRelationBusinessEntity> listPendingExtract(int limit) {
-        return this.lambdaQuery()
-                .eq(ReportRelationBusinessEntity::getDeleted, false)
-                .in(ReportRelationBusinessEntity::getExtractStatus, 0, 3)
-                .orderByAsc(ReportRelationBusinessEntity::getCreateTime)
-                .last("LIMIT " + limit)
-                .list();
-    }
+
 
     /**
      * 更新提取状态

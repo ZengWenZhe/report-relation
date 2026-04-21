@@ -39,6 +39,10 @@ public class ReportInfoChangeEventService {
 
         try {
             ReportInfoChangedVO vo = JSON.parseObject(message, ReportInfoChangedVO.class);
+            if (vo == null) {
+                log.warn("消息解析为null，跳过, message={}", message);
+                return;
+            }
 
             if (!"update".equals(vo.getOperate())) {
                 log.debug("非update操作，跳过, operate={}", vo.getOperate());
