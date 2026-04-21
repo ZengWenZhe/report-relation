@@ -1,5 +1,6 @@
 package com.xgjktech.reportrelation.service;
 
+import java.sql.Timestamp;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -20,7 +21,6 @@ import com.xgjktech.reportrelation.exception.RateLimitException;
 import com.xgjktech.reportrelation.strategy.ExtractStrategy;
 import com.xgjktech.reportrelation.strategy.ExtractStrategyRouter;
 
-import org.apache.commons.collections4.CollectionUtils;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -84,22 +84,23 @@ public class ExtractScheduleJob {
         }
 
         int batchSize = nacosConfig.getExtractBatchSize() != null ? nacosConfig.getExtractBatchSize() : DEFAULT_BATCH_SIZE;
-        List<Long> reportIds = reportExtractQueueService.batchDequeue(batchSize);
-        if (CollectionUtils.isEmpty(reportIds)) {
+        Map<Long, Long> dequeued = reportExtractQueueService.batchDequeue(batchSize);
+        if (dequeued.isEmpty()) {
             return;
         }
 
-        log.info("定时任务取出{}条待提取reportId", reportIds.size());
+        log.info("定时任务取出{}条待提取reportId", dequeued.size());
 
-        List<ReportRelationBusinessEntity> records = reportRelationBusinessService.listByReportIds(reportIds);
+        List<ReportRelationBusinessEntity> records = reportRelationBusinessService.listByReportIds(dequeued.keySet());
         if (records.isEmpty()) {
-            log.warn("所有reportId在DB中无关联记录，跳过：{}", reportIds);
+            log.warn("所有reportId在DB中无关联记录，跳过：{}", dequeued.keySet());
             return;
         }
 
         ExecutorService executor = getOrRebuildExecutor();
         AtomicInteger successCount = new AtomicInteger(0);
         AtomicInteger failCount = new AtomicInteger(0);
+        AtomicInteger skippedCount = new AtomicInteger(0);
         AtomicBoolean rateLimited = new AtomicBoolean(false);
 
         Map<Long, List<ReportRelationBusinessEntity>> byReportId = records.stream()
@@ -111,19 +112,26 @@ public class ExtractScheduleJob {
                 .map(reportGroup -> CompletableFuture.runAsync(() -> {
                     Long reportId = reportGroup.getKey();
                     List<ReportRelationBusinessEntity> groupRecords = reportGroup.getValue();
+                    long enqueueTime = dequeued.getOrDefault(reportId, 0L);
 
                     if (rateLimited.get()) {
-                        reportExtractQueueService.enqueue(reportId);
+                        reportExtractQueueService.enqueueWithScore(reportId, enqueueTime);
                         return;
                     }
 
                     String reportContent = contentCache.computeIfAbsent(reportId,
                             id -> extractSchemaService.fetchReportContent(id));
 
+                    boolean needRequeue = false;
                     for (ReportRelationBusinessEntity record : groupRecords) {
                         if (rateLimited.get()) {
-                            reportExtractQueueService.enqueue(reportId);
+                            reportExtractQueueService.enqueueWithScore(reportId, enqueueTime);
                             return;
+                        }
+
+                        if (needSkip(record, enqueueTime)) {
+                            skippedCount.incrementAndGet();
+                            continue;
                         }
 
                         ExtractStrategy strategy = extractStrategyRouter.getStrategy(record.getBizType());
@@ -137,10 +145,11 @@ public class ExtractScheduleJob {
                                 successCount.incrementAndGet();
                             } else {
                                 failCount.incrementAndGet();
+                                needRequeue = true;
                             }
                         } catch (RateLimitException e) {
                             rateLimited.set(true);
-                            reportExtractQueueService.enqueue(reportId);
+                            reportExtractQueueService.enqueueWithScore(reportId, enqueueTime);
                             log.warn("AI限流触发，reportId={}回塞队列，本轮剩余任务将跳过", reportId);
                             return;
                         } catch (Exception e) {
@@ -148,17 +157,42 @@ public class ExtractScheduleJob {
                             log.error("提取失败，id={}, reportId={}, bizType={}, error={}",
                                     record.getId(), record.getReportId(), record.getBizType(), e.getMessage(), e);
                             reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null, null);
+                            needRequeue = true;
                         }
+                    }
+
+                    if (needRequeue) {
+                        reportExtractQueueService.enqueueWithScore(reportId, enqueueTime);
                     }
                 }, executor))
                 .toArray(CompletableFuture[]::new)).join();
 
         if (rateLimited.get()) {
-            log.warn("本轮因AI限流提前终止，成功={}，失败={}，剩余已回塞队列", successCount.get(), failCount.get());
+            log.warn("本轮因AI限流提前终止，成功={}，失败={}，跳过={}，剩余已回塞队列",
+                    successCount.get(), failCount.get(), skippedCount.get());
         } else {
-            log.info("定时提取完成，总记录={}，去重reportId={}，成功={}，失败={}",
-                    records.size(), byReportId.size(), successCount.get(), failCount.get());
+            log.info("定时提取完成，总记录={}，去重reportId={}，成功={}，失败={}，跳过（入队后已成功）={}",
+                    records.size(), byReportId.size(),
+                    successCount.get(), failCount.get(), skippedCount.get());
         }
+    }
+
+    /**
+     * 判断是否跳过：仅当 status=2（成功）且 updateTime > enqueueTime 时跳过
+     * 说明该记录在入队之后已经被成功提取过，不需要重复提取
+     */
+    private boolean needSkip(ReportRelationBusinessEntity record, long enqueueTime) {
+        if (!Integer.valueOf(2).equals(record.getExtractStatus())) {
+            return false;
+        }
+        if (enqueueTime <= 0) {
+            return false;
+        }
+        Timestamp updateTime = record.getUpdateTime();
+        if (updateTime == null) {
+            return false;
+        }
+        return updateTime.getTime() > enqueueTime;
     }
 
     private ExecutorService getOrRebuildExecutor() {

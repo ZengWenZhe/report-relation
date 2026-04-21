@@ -4,15 +4,12 @@ import java.sql.Timestamp;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import javax.annotation.Resource;
-
 import com.xgjktech.common.base.AbstractBaseService;
 import com.xgjktech.reportrelation.data.entity.ReportRelationBusinessEntity;
 import com.xgjktech.reportrelation.mapper.ReportRelationBusinessMapper;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.ListUtils;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import lombok.extern.slf4j.Slf4j;
@@ -28,10 +25,6 @@ import lombok.extern.slf4j.Slf4j;
 public class ReportRelationBusinessService extends AbstractBaseService<ReportRelationBusinessMapper, ReportRelationBusinessEntity> {
 
     private static final int MAX_RETRY_COUNT = 3;
-
-    @Lazy
-    @Resource
-    private ReportExtractQueueService reportExtractQueueService;
 
     /**
      * 判断某个reportId是否存在任意未删除的关联记录
@@ -85,15 +78,15 @@ public class ReportRelationBusinessService extends AbstractBaseService<ReportRel
 
 
     /**
-     * 更新提取状态
-     * 当status=3（失败）时自动处理重试：retryCount < MAX_RETRY_COUNT 则入队重试，否则标记为最终失败
+     * 更新提取状态。
+     * status=3 时自动处理重试计数，返回是否需要入队重试（由调用方决定如何入队）。
+     * status=2 时重置 retryCount。
      *
-     * @param extractConfigId 本次使用的配置ID，未获取到时传null
+     * @return true=需要入队重试（仅 status=3 且 retryCount < MAX 时返回 true）
      */
-    public void updateExtractStatus(Long id, Integer status, String extractSchema, Long extractConfigId) {
+    public boolean updateExtractStatus(Long id, Integer status, String extractSchema, Long extractConfigId) {
         if (Integer.valueOf(3).equals(status)) {
-            handleFailWithRetry(id, extractSchema, extractConfigId);
-            return;
+            return handleFailWithRetry(id, extractSchema, extractConfigId);
         }
 
         doUpdateStatus(id, status, extractSchema, extractConfigId, null);
@@ -105,13 +98,17 @@ public class ReportRelationBusinessService extends AbstractBaseService<ReportRel
                     .set(ReportRelationBusinessEntity::getUpdateTime, new Timestamp(System.currentTimeMillis()))
                     .update();
         }
+        return false;
     }
 
-    private void handleFailWithRetry(Long id, String extractSchema, Long extractConfigId) {
+    /**
+     * @return true=需要入队重试
+     */
+    private boolean handleFailWithRetry(Long id, String extractSchema, Long extractConfigId) {
         ReportRelationBusinessEntity record = this.getById(id);
         if (record == null) {
             log.warn("更新提取状态时记录不存在，id={}", id);
-            return;
+            return false;
         }
 
         int currentRetry = record.getRetryCount() != null ? record.getRetryCount() : 0;
@@ -119,21 +116,23 @@ public class ReportRelationBusinessService extends AbstractBaseService<ReportRel
         if (currentRetry < MAX_RETRY_COUNT) {
             int newRetry = currentRetry + 1;
             doUpdateStatus(id, 3, extractSchema, extractConfigId, newRetry);
-            reportExtractQueueService.enqueue(record.getReportId());
-            log.info("提取失败，进入重试队列，id={}, reportId={}, retryCount={}/{}",
+            log.info("提取失败，需重试，id={}, reportId={}, retryCount={}/{}",
                     id, record.getReportId(), newRetry, MAX_RETRY_COUNT);
+            return true;
         } else {
             doUpdateStatus(id, 3, extractSchema, extractConfigId, currentRetry);
             log.warn("提取失败且已达最大重试次数，不再重试，id={}, reportId={}, retryCount={}",
                     id, record.getReportId(), currentRetry);
+            return false;
         }
     }
 
     private void doUpdateStatus(Long id, Integer status, String extractSchema, Long extractConfigId, Integer retryCount) {
+        boolean isFail = Integer.valueOf(3).equals(status);
         this.lambdaUpdate()
                 .eq(ReportRelationBusinessEntity::getId, id)
                 .set(ReportRelationBusinessEntity::getExtractStatus, status)
-                .set(extractSchema != null, ReportRelationBusinessEntity::getExtractSchema, extractSchema)
+                .set(isFail || extractSchema != null, ReportRelationBusinessEntity::getExtractSchema, extractSchema)
                 .set(extractConfigId != null, ReportRelationBusinessEntity::getExtractConfigId, extractConfigId)
                 .set(retryCount != null, ReportRelationBusinessEntity::getRetryCount, retryCount)
                 .set(ReportRelationBusinessEntity::getUpdateTime, new Timestamp(System.currentTimeMillis()))
