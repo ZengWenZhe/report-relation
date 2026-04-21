@@ -1,6 +1,7 @@
 package com.xgjktech.reportrelation.service;
 
 import java.sql.Timestamp;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -10,12 +11,16 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import javax.annotation.PreDestroy;
 import javax.annotation.Resource;
 
+import com.xgjktech.cloud.common.Result;
 import com.xgjktech.reportrelation.base.NacosConfig;
+import com.xgjktech.reportrelation.base.feign.WorkReportFeign;
+import com.xgjktech.reportrelation.base.model.ReportInfo;
 import com.xgjktech.reportrelation.data.entity.ReportRelationBusinessEntity;
 import com.xgjktech.reportrelation.exception.RateLimitException;
 import com.xgjktech.reportrelation.strategy.ExtractStrategy;
@@ -49,6 +54,9 @@ public class ExtractScheduleJob {
 
     @Resource
     private AiClient aiClient;
+
+    @Resource
+    private WorkReportFeign workReportFeign;
 
     private volatile ExecutorService extractExecutor;
 
@@ -96,6 +104,8 @@ public class ExtractScheduleJob {
             log.warn("所有reportId在DB中无关联记录，跳过：{}", dequeued.keySet());
             return;
         }
+
+        backfillReportInfo(records);
 
         ExecutorService executor = getOrRebuildExecutor();
         AtomicInteger successCount = new AtomicInteger(0);
@@ -193,6 +203,67 @@ public class ExtractScheduleJob {
             return false;
         }
         return updateTime.getTime() > enqueueTime;
+    }
+
+    /**
+     * 批量通过 Feign 查询汇报信息，回填缺失的 authorId / reportName / reportSendTime
+     */
+    private void backfillReportInfo(List<ReportRelationBusinessEntity> records) {
+        List<ReportRelationBusinessEntity> needBackfill = records.stream()
+                .filter(r -> r.getAuthorId() == null || r.getReportName() == null)
+                .collect(Collectors.toList());
+        if (needBackfill.isEmpty()) {
+            return;
+        }
+
+        List<Long> reportIds = needBackfill.stream()
+                .map(ReportRelationBusinessEntity::getReportId)
+                .distinct()
+                .collect(Collectors.toList());
+        try {
+            Result<List<ReportInfo>> result = workReportFeign.getReportInfoByIds(reportIds);
+            if (result == null || result.getData() == null || result.getData().isEmpty()) {
+                log.warn("批量查询汇报信息返回为空，reportIds={}", reportIds);
+                return;
+            }
+            Map<Long, ReportInfo> infoMap = result.getData().stream()
+                    .collect(Collectors.toMap(ReportInfo::getRecordId, Function.identity(), (a, b) -> a));
+
+            List<Long> updatedIds = new ArrayList<>();
+            for (ReportRelationBusinessEntity record : needBackfill) {
+                ReportInfo info = infoMap.get(record.getReportId());
+                if (info == null) {
+                    continue;
+                }
+                boolean changed = false;
+                if (record.getAuthorId() == null && info.getWriteEmpId() != null) {
+                    record.setAuthorId(info.getWriteEmpId());
+                    changed = true;
+                }
+                if (record.getReportName() == null && info.getMain() != null) {
+                    record.setReportName(info.getMain());
+                    changed = true;
+                }
+                if (record.getReportSendTime() == null && info.getReportTime() != null) {
+                    record.setReportSendTime(info.getReportTime().toLocalDateTime());
+                    changed = true;
+                }
+                if (changed) {
+                    reportRelationBusinessService.lambdaUpdate()
+                            .eq(ReportRelationBusinessEntity::getId, record.getId())
+                            .set(record.getAuthorId() != null, ReportRelationBusinessEntity::getAuthorId, record.getAuthorId())
+                            .set(record.getReportName() != null, ReportRelationBusinessEntity::getReportName, record.getReportName())
+                            .set(record.getReportSendTime() != null, ReportRelationBusinessEntity::getReportSendTime, record.getReportSendTime())
+                            .update();
+                    updatedIds.add(record.getId());
+                }
+            }
+            if (!updatedIds.isEmpty()) {
+                log.info("回填汇报信息完成，更新{}条记录", updatedIds.size());
+            }
+        } catch (Exception e) {
+            log.error("批量查询汇报信息异常，跳过回填，reportIds={}, error={}", reportIds, e.getMessage(), e);
+        }
     }
 
     private ExecutorService getOrRebuildExecutor() {

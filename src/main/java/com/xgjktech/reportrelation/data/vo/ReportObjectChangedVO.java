@@ -31,6 +31,12 @@ public class ReportObjectChangedVO {
     @ApiModelProperty("汇报时间")
     private Timestamp reportTime;
 
+    @ApiModelProperty("汇报人ID")
+    private Long writeEmpId;
+
+    @ApiModelProperty("汇报人姓名")
+    private String writeEmpName;
+
     @ApiModelProperty("当前操作用户id")
     private Long currentEmpId;
 
