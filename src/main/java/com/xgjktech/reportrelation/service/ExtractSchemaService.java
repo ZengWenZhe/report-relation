@@ -110,7 +110,6 @@ public class ExtractSchemaService {
             return false;
         }
 
-        jsonResult.put("authorId", record.getCreateBy());
         String finalAnswer = jsonResult.toJSONString();
 
         reportRelationBusinessService.updateExtractStatus(record.getId(), 2, finalAnswer, configId);

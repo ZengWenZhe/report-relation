@@ -28,6 +28,9 @@ public class ReportRelationBusinessEntity extends BaseEntity {
     @ApiModelProperty("汇报名称/标题")
     private String reportName;
 
+    @ApiModelProperty("汇报作者ID")
+    private Long authorId;
+
     @ApiModelProperty("业务类型")
     private String bizType;
 
@@ -46,11 +49,8 @@ public class ReportRelationBusinessEntity extends BaseEntity {
     @ApiModelProperty("提取重试次数")
     private Integer retryCount;
 
-    @ApiModelProperty("汇报创建时间")
-    private LocalDateTime reportCreateTime;
-
-    @ApiModelProperty("汇报上次更新时间")
-    private LocalDateTime reportUpdateTime;
+    @ApiModelProperty("汇报发送时间")
+    private LocalDateTime reportSendTime;
 
     @ApiModelProperty("关联时间")
     private LocalDateTime relationTime;

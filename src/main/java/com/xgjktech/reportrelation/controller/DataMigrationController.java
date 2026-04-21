@@ -84,7 +84,6 @@ public class DataMigrationController {
                         entity.setBizType(BIZ_TYPE_BP);
                         entity.setBizId(vo.getTaskId());
                         entity.setExtractStatus(0);
-                        entity.setReportCreateTime(vo.getBusinessTime());
                         entity.setRelationTime(vo.getRelationTime());
                         entity.setDeleted(false);
                         entity.setCorpId(vo.getCorpId());

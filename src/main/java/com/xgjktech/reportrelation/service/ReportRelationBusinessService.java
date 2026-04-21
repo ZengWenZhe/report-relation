@@ -71,7 +71,6 @@ public class ReportRelationBusinessService extends AbstractBaseService<ReportRel
                 .eq(ReportRelationBusinessEntity::getBizType, bizType)
                 .eq(ReportRelationBusinessEntity::getBizId, bizId)
                 .eq(ReportRelationBusinessEntity::getDeleted, false)
-                .orderByDesc(ReportRelationBusinessEntity::getReportCreateTime)
                 .list();
     }
 

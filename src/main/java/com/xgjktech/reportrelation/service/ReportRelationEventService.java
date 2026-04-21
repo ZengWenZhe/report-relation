@@ -103,8 +103,9 @@ public class ReportRelationEventService {
             entity.setReportName(vo.getMain());
             entity.setBizType(bizType);
             entity.setBizId(bizId);
+            entity.setAuthorId(vo.getCurrentEmpId());
             entity.setExtractStatus(0);
-            entity.setReportCreateTime(
+            entity.setReportSendTime(
                     vo.getReportTime() != null ? vo.getReportTime().toLocalDateTime() : null);
             entity.setRelationTime(LocalDateTime.now());
             entity.setDeleted(false);
