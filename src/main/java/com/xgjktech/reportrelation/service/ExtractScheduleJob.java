@@ -2,6 +2,7 @@ package com.xgjktech.reportrelation.service;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -78,8 +79,18 @@ public class ExtractScheduleJob {
         log.info("定时任务取出{}条待提取reportId", reportIds.size());
 
         List<ReportRelationBusinessEntity> records = reportRelationBusinessService.listByReportIds(reportIds);
+
+        Set<Long> foundReportIds = records.stream()
+                .map(ReportRelationBusinessEntity::getReportId)
+                .collect(Collectors.toSet());
+        reportIds.stream()
+                .filter(id -> !foundReportIds.contains(id))
+                .forEach(id -> {
+                    reportExtractQueueService.enqueue(id);
+                    log.warn("reportId={}在DB中暂无关联记录，重新入队等待下次处理", id);
+                });
+
         if (records.isEmpty()) {
-            log.warn("所有reportId在DB中无关联记录，丢弃不回队：{}", reportIds);
             return;
         }
 
@@ -107,14 +118,17 @@ public class ExtractScheduleJob {
                             continue;
                         }
                         try {
-                            strategy.extract(record, reportContent);
-                            successCount.incrementAndGet();
+                            boolean success = strategy.extract(record, reportContent);
+                            if (success) {
+                                successCount.incrementAndGet();
+                            } else {
+                                failCount.incrementAndGet();
+                            }
                         } catch (Exception e) {
                             failCount.incrementAndGet();
                             log.error("提取失败，id={}, reportId={}, bizType={}, error={}",
                                     record.getId(), record.getReportId(), record.getBizType(), e.getMessage(), e);
-                            reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
-                            reportExtractQueueService.enqueue(record.getReportId());
+                            reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null, null);
                         }
                     }
                 }, executor))

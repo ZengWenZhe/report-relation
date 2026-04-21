@@ -33,14 +33,14 @@ public class BpExtractStrategy implements ExtractStrategy {
     }
 
     @Override
-    public void extract(ReportRelationBusinessEntity record) {
-        extract(record, null);
+    public boolean extract(ReportRelationBusinessEntity record) {
+        return extract(record, null);
     }
 
     @Override
-    public void extract(ReportRelationBusinessEntity record, String reportContent) {
+    public boolean extract(ReportRelationBusinessEntity record, String reportContent) {
         String bpContext = fetchBpContext(record.getBizId());
-        extractSchemaService.extractSingle(
+        return extractSchemaService.extractSingle(
                 record,
                 ExtractConfigCodeEnum.BP_REPORT_EXTRACT_SCHEMA,
                 bpContext,

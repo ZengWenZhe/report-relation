@@ -28,13 +28,20 @@ public class ReportExtractConfigService extends AbstractBaseService<ReportExtrac
      * 根据配置编码获取配置内容（不区分bizType，向后兼容）
      */
     public String getConfigContentByCode(ExtractConfigCodeEnum configCode) {
-        return getConfigContentByCode(configCode, null);
+        return getActiveConfig(configCode, null).getConfigContent();
     }
 
     /**
      * 根据配置编码 + bizType 获取配置内容（带本地缓存）
      */
     public String getConfigContentByCode(ExtractConfigCodeEnum configCode, String bizType) {
+        return getActiveConfig(configCode, bizType).getConfigContent();
+    }
+
+    /**
+     * 获取当前生效的配置实体（含id、configContent等完整信息）
+     */
+    public ReportExtractConfigEntity getActiveConfig(ExtractConfigCodeEnum configCode, String bizType) {
         if (configCode == null) {
             throw new BusinessException("配置编码不能为空");
         }
@@ -45,9 +52,9 @@ public class ReportExtractConfigService extends AbstractBaseService<ReportExtrac
             return cached.value;
         }
 
-        String content = loadConfigFromDb(configCode, bizType);
-        configCache.put(cacheKey, new CacheEntry(content));
-        return content;
+        ReportExtractConfigEntity config = loadConfigFromDb(configCode, bizType);
+        configCache.put(cacheKey, new CacheEntry(config));
+        return config;
     }
 
     public void clearCache() {
@@ -55,7 +62,7 @@ public class ReportExtractConfigService extends AbstractBaseService<ReportExtrac
         log.info("配置缓存已清除");
     }
 
-    private String loadConfigFromDb(ExtractConfigCodeEnum configCode, String bizType) {
+    private ReportExtractConfigEntity loadConfigFromDb(ExtractConfigCodeEnum configCode, String bizType) {
         LambdaQueryWrapper<ReportExtractConfigEntity> query = new LambdaQueryWrapper<>();
         query.eq(ReportExtractConfigEntity::getConfigCode, configCode.getCode())
                 .eq(ReportExtractConfigEntity::getStatus, 1)
@@ -75,14 +82,14 @@ public class ReportExtractConfigService extends AbstractBaseService<ReportExtrac
             throw new BusinessException("未找到提取配置：" + configCode.getName());
         }
 
-        return config.getConfigContent();
+        return config;
     }
 
     private static class CacheEntry {
-        final String value;
+        final ReportExtractConfigEntity value;
         final long expireAt;
 
-        CacheEntry(String value) {
+        CacheEntry(ReportExtractConfigEntity value) {
             this.value = value;
             this.expireAt = System.currentTimeMillis() + CACHE_TTL_MS;
         }

@@ -15,6 +15,7 @@ import com.xgjktech.reportrelation.base.model.ReportListSimpleInfoByIdsParam;
 import com.xgjktech.reportrelation.base.model.ReportSimpleInfoForGptVO;
 import com.xgjktech.reportrelation.base.param.AiData;
 import com.xgjktech.reportrelation.base.param.AiModel;
+import com.xgjktech.reportrelation.data.entity.ReportExtractConfigEntity;
 import com.xgjktech.reportrelation.data.entity.ReportRelationBusinessEntity;
 import com.xgjktech.reportrelation.enums.ExtractConfigCodeEnum;
 
@@ -48,87 +49,75 @@ public class ExtractSchemaService {
     @Resource
     private FilegptFeign filegptFeign;
 
-    /**
-     * 通用提取流程：获取汇报内容 -> 由调用方提供业务上下文组装prompt -> 调AI -> 解析结果
-     *
-     * @param record        关联记录
-     * @param configCode    配置编码(决定prompt模板)
-     * @param bizContext    业务上下文JSON(由各策略提供, 用于替换模板中的占位符)
-     * @param contextPlaceholder 模板中业务上下文的占位符名称
-     */
-    /**
-     * 自行获取汇报内容的提取入口
-     */
-    public void extractSingle(ReportRelationBusinessEntity record,
-                              ExtractConfigCodeEnum configCode,
-                              String bizContext,
-                              String contextPlaceholder) {
-        extractSingle(record, configCode, bizContext, contextPlaceholder, null);
-    }
 
     /**
      * 可复用已有汇报内容的提取入口
      *
      * @param preloadedContent 预加载的汇报内容，null 时自行拉取
+     * @return true=提取成功, false=提取失败
      */
-    public void extractSingle(ReportRelationBusinessEntity record,
+    public boolean extractSingle(ReportRelationBusinessEntity record,
+                                 ExtractConfigCodeEnum configCode,
+                                 String bizContext,
+                                 String contextPlaceholder,
+                                 String preloadedContent) {
+        log.info("开始结构化提取，id={}, reportId={}, bizId={}, bizType={}",
+                record.getId(), record.getReportId(), record.getBizId(), record.getBizType());
+
+        reportRelationBusinessService.updateExtractStatus(record.getId(), 1, null, null);
+
+        try {
+            return doExtract(record, configCode, bizContext, contextPlaceholder, preloadedContent);
+        } catch (Exception e) {
+            log.error("结构化提取异常，id={}, reportId={}, error={}",
+                    record.getId(), record.getReportId(), e.getMessage(), e);
+            reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null, null);
+            return false;
+        }
+    }
+
+    private boolean doExtract(ReportRelationBusinessEntity record,
                               ExtractConfigCodeEnum configCode,
                               String bizContext,
                               String contextPlaceholder,
                               String preloadedContent) {
-        log.info("开始结构化提取，id={}, reportId={}, bizId={}, bizType={}",
-                record.getId(), record.getReportId(), record.getBizId(), record.getBizType());
-
-        reportRelationBusinessService.updateExtractStatus(record.getId(), 1, null);
-
-        try {
-            doExtract(record, configCode, bizContext, contextPlaceholder, preloadedContent);
-        } catch (Exception e) {
-            log.error("结构化提取异常，id={}, reportId={}, error={}",
-                    record.getId(), record.getReportId(), e.getMessage(), e);
-            reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
-        }
-    }
-
-    private void doExtract(ReportRelationBusinessEntity record,
-                           ExtractConfigCodeEnum configCode,
-                           String bizContext,
-                           String contextPlaceholder,
-                           String preloadedContent) {
         String reportContent = preloadedContent != null ? preloadedContent : fetchReportContent(record.getReportId());
         if (StringUtils.isBlank(reportContent)) {
             log.warn("汇报内容为空，跳过提取，reportId={}", record.getReportId());
-            reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
-            return;
+            reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null, null);
+            return false;
         }
 
-        String promptTemplate = reportExtractConfigService.getConfigContentByCode(configCode, record.getBizType());
-        String prompt = promptTemplate
+        ReportExtractConfigEntity config = reportExtractConfigService.getActiveConfig(configCode, record.getBizType());
+        Long configId = config.getId();
+
+        String prompt = config.getConfigContent()
                 .replace("{{REPORT_CONTENT}}", reportContent)
                 .replace(contextPlaceholder, StringUtils.defaultString(bizContext, "{}"));
 
         String answer = callAi(prompt);
         if (answer == null) {
             log.warn("AI结构化提取返回为空，reportId={}", record.getReportId());
-            reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
-            return;
+            reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null, configId);
+            return false;
         }
 
-        log.info("AI结构化提取成功，reportId={}, answer前100字={}",
-                record.getReportId(), StringUtils.abbreviate(answer, 100));
+        log.info("AI结构化提取成功，reportId={}, configId={}, answer前100字={}",
+                record.getReportId(), configId, StringUtils.abbreviate(answer, 100));
 
         JSONObject jsonResult = parseJson(answer);
         if (jsonResult == null) {
             log.error("AI返回结果JSON解析失败，reportId={}, answer={}", record.getReportId(), answer);
-            reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
-            return;
+            reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null, configId);
+            return false;
         }
 
         jsonResult.put("authorId", record.getCreateBy());
         String finalAnswer = jsonResult.toJSONString();
 
-        reportRelationBusinessService.updateExtractStatus(record.getId(), 2, finalAnswer);
-        log.info("结构化提取完成，id={}, reportId={}", record.getId(), record.getReportId());
+        reportRelationBusinessService.updateExtractStatus(record.getId(), 2, finalAnswer, configId);
+        log.info("结构化提取完成，id={}, reportId={}, configId={}", record.getId(), record.getReportId(), configId);
+        return true;
     }
 
     public String fetchReportContent(Long reportId) {

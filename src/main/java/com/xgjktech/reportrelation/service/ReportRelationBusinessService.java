@@ -4,12 +4,15 @@ import java.sql.Timestamp;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import javax.annotation.Resource;
+
 import com.xgjktech.common.base.AbstractBaseService;
 import com.xgjktech.reportrelation.data.entity.ReportRelationBusinessEntity;
 import com.xgjktech.reportrelation.mapper.ReportRelationBusinessMapper;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.ListUtils;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import lombok.extern.slf4j.Slf4j;
@@ -23,6 +26,23 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 @Service
 public class ReportRelationBusinessService extends AbstractBaseService<ReportRelationBusinessMapper, ReportRelationBusinessEntity> {
+
+    private static final int MAX_RETRY_COUNT = 3;
+
+    @Lazy
+    @Resource
+    private ReportExtractQueueService reportExtractQueueService;
+
+    /**
+     * 判断某个reportId是否存在任意未删除的关联记录
+     */
+    public boolean existsByReportId(Long reportId) {
+        return this.lambdaQuery()
+                .eq(ReportRelationBusinessEntity::getReportId, reportId)
+                .eq(ReportRelationBusinessEntity::getDeleted, false)
+                .last("LIMIT 1")
+                .count() > 0;
+    }
 
     /**
      * 判断关联关系是否已存在
@@ -66,13 +86,56 @@ public class ReportRelationBusinessService extends AbstractBaseService<ReportRel
 
     /**
      * 更新提取状态
+     * 当status=3（失败）时自动处理重试：retryCount < MAX_RETRY_COUNT 则入队重试，否则标记为最终失败
+     *
+     * @param extractConfigId 本次使用的配置ID，未获取到时传null
      */
-    public void updateExtractStatus(Long id, Integer status, String extractSchema) {
+    public void updateExtractStatus(Long id, Integer status, String extractSchema, Long extractConfigId) {
+        if (Integer.valueOf(3).equals(status)) {
+            handleFailWithRetry(id, extractSchema, extractConfigId);
+            return;
+        }
+
+        doUpdateStatus(id, status, extractSchema, extractConfigId, null);
+
+        if (Integer.valueOf(2).equals(status)) {
+            this.lambdaUpdate()
+                    .eq(ReportRelationBusinessEntity::getId, id)
+                    .set(ReportRelationBusinessEntity::getRetryCount, 0)
+                    .update();
+        }
+    }
+
+    private void handleFailWithRetry(Long id, String extractSchema, Long extractConfigId) {
+        ReportRelationBusinessEntity record = this.getById(id);
+        if (record == null) {
+            log.warn("更新提取状态时记录不存在，id={}", id);
+            return;
+        }
+
+        int currentRetry = record.getRetryCount() != null ? record.getRetryCount() : 0;
+
+        if (currentRetry < MAX_RETRY_COUNT) {
+            int newRetry = currentRetry + 1;
+            doUpdateStatus(id, 3, extractSchema, extractConfigId, newRetry);
+            reportExtractQueueService.enqueue(record.getReportId());
+            log.info("提取失败，进入重试队列，id={}, reportId={}, retryCount={}/{}",
+                    id, record.getReportId(), newRetry, MAX_RETRY_COUNT);
+        } else {
+            doUpdateStatus(id, 3, extractSchema, extractConfigId, currentRetry);
+            log.warn("提取失败且已达最大重试次数，不再重试，id={}, reportId={}, retryCount={}",
+                    id, record.getReportId(), currentRetry);
+        }
+    }
+
+    private void doUpdateStatus(Long id, Integer status, String extractSchema, Long extractConfigId, Integer retryCount) {
         this.lambdaUpdate()
                 .eq(ReportRelationBusinessEntity::getId, id)
                 .set(ReportRelationBusinessEntity::getExtractStatus, status)
                 .set(extractSchema != null, ReportRelationBusinessEntity::getExtractSchema, extractSchema)
-                .set( ReportRelationBusinessEntity::getUpdateTime, new Timestamp(System.currentTimeMillis()))
+                .set(extractConfigId != null, ReportRelationBusinessEntity::getExtractConfigId, extractConfigId)
+                .set(retryCount != null, ReportRelationBusinessEntity::getRetryCount, retryCount)
+                .set(ReportRelationBusinessEntity::getUpdateTime, new Timestamp(System.currentTimeMillis()))
                 .update();
     }
 

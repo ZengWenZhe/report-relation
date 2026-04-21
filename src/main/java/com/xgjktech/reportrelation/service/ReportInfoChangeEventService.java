@@ -31,6 +31,9 @@ public class ReportInfoChangeEventService {
     @Resource
     private ReportExtractQueueService reportExtractQueueService;
 
+    @Resource
+    private ReportRelationBusinessService reportRelationBusinessService;
+
     @RabbitListener(bindings = @QueueBinding(
             value = @Queue(name = "queue_report_relation_report_info_changed"),
             exchange = @Exchange(name = EX_CWORK_REPORT_INFO_CHANGE, type = ExchangeTypes.FANOUT)))
@@ -51,6 +54,11 @@ public class ReportInfoChangeEventService {
 
             if (vo.getReportRecordId() == null) {
                 log.warn("汇报ID为空，跳过");
+                return;
+            }
+
+            if (!reportRelationBusinessService.existsByReportId(vo.getReportRecordId())) {
+                log.debug("reportId={}在本地无关联记录，非本服务关心的汇报，跳过", vo.getReportRecordId());
                 return;
             }
 

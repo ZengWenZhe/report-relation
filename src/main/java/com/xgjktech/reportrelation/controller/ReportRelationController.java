@@ -42,7 +42,7 @@ public class ReportRelationController {
         return Result.success(reportRelationBusinessService.listByBizId(bizType, bizId));
     }
 
-    @ApiOperation("根据批量业务ID重新触发结构化提取（入队由定时任务执行）")
+    @ApiOperation("根据批量业务ID重新触发结构化提取（入队由定时任务执行），返回入队的去重汇报数")
     @PostMapping("/reExtractSchema")
     public Result<Integer> reExtractSchema(
             @ApiParam("业务类型") @RequestParam(defaultValue = "BP") String bizType,
@@ -61,17 +61,25 @@ public class ReportRelationController {
             return Result.success(0);
         }
 
-        records.stream()
+        long enqueuedCount = records.stream()
                 .map(ReportRelationBusinessEntity::getReportId)
                 .distinct()
-                .forEach(reportExtractQueueService::enqueue);
+                .peek(reportExtractQueueService::enqueue)
+                .count();
 
-        return Result.success(records.size());
+        return Result.success((int) enqueuedCount);
     }
 
     @ApiOperation("查询提取队列大小")
     @GetMapping("/queueSize")
     public Result<Long> queueSize() {
         return Result.success(reportExtractQueueService.queueSize());
+    }
+
+    @ApiOperation("查看提取队列中的汇报ID列表（仅查看不移除）")
+    @GetMapping("/queueReportIds")
+    public Result<List<Long>> queueReportIds(
+            @ApiParam("最大返回条数") @RequestParam(defaultValue = "100") Integer limit) {
+        return Result.success(reportExtractQueueService.listQueuedReportIds(limit));
     }
 }

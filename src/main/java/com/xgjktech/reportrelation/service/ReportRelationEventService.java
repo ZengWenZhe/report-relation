@@ -48,8 +48,15 @@ public class ReportRelationEventService {
                 log.warn("消息解析为null，跳过, message={}", message);
                 return;
             }
-            if (vo.getRecordId() == null) {
+            if (vo.getReportId() == null && vo.getRecordId() != null) {
+                vo.setReportId(vo.getRecordId());
+            } else if (vo.getRecordId() == null && vo.getReportId() != null) {
                 vo.setRecordId(vo.getReportId());
+            }
+
+            if (vo.getReportId() == null) {
+                log.warn("reportId和recordId均为空，跳过, message={}", message);
+                return;
             }
 
             if (CollectionUtils.isNotEmpty(vo.getAddObjectList())) {
@@ -84,6 +91,11 @@ public class ReportRelationEventService {
             }
 
             Long corpId = handler.fetchCorpId(bizId);
+            if (corpId == null) {
+                log.error("获取corpId失败，无法建立关联，reportId={}, bizType={}, bizId={}",
+                        vo.getReportId(), bizType, bizId);
+                return;
+            }
 
             ReportRelationBusinessEntity entity = new ReportRelationBusinessEntity();
             entity.setReportId(vo.getReportId());

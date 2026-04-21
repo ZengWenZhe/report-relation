@@ -34,11 +34,17 @@ public class ReportRelationBusinessEntity extends BaseEntity {
     @ApiModelProperty("业务ID")
     private Long bizId;
 
-    @ApiModelProperty("结构化提取结果 JSON")
+    @ApiModelProperty("结构化提取结果 JSON | MarkDown")
     private String extractSchema;
 
-    @ApiModelProperty("提取状态：0=未提取，1=提取中，2=成功，3=失败，4=无关/弱关系")
+    @ApiModelProperty("本次提取使用的配置ID（关联report_extract_config.id）")
+    private Long extractConfigId;
+
+    @ApiModelProperty("提取状态：0=未提取，1=提取中，2=成功，3=失败")
     private Integer extractStatus;
+
+    @ApiModelProperty("提取重试次数")
+    private Integer retryCount;
 
     @ApiModelProperty("汇报创建时间")
     private LocalDateTime reportCreateTime;

@@ -18,7 +18,7 @@ public interface BizTypeHandler {
     String bizType();
 
     /**
-     * 根据业务ID获取企业ID (不同业务获取方式不同)
+     * 根据业务ID获取企业ID (不同业务获取方式不同)，可忽略
      */
     Long fetchCorpId(Long bizId);
 }
