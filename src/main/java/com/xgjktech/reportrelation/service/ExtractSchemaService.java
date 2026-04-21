@@ -79,7 +79,7 @@ public class ExtractSchemaService {
                               String bizContext,
                               String contextPlaceholder,
                               String preloadedContent) {
-        String reportContent = preloadedContent != null ? preloadedContent : fetchReportContent(record.getReportId());
+        String reportContent = StringUtils.isNotBlank(preloadedContent) ? preloadedContent : fetchReportContent(record.getReportId());
         if (StringUtils.isBlank(reportContent)) {
             log.warn("汇报内容为空，跳过提取，reportId={}", record.getReportId());
             reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null, null);

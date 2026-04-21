@@ -37,10 +37,10 @@ public class NacosConfig {
 
     // ========== AI 接口配置 ==========
 
-    @Value("${ai.api.url:https://one.20100706.xyz/v1/messages}")
+    @Value("${ai.api.url:}")
     private String aiApiUrl;
 
-    @Value("${ai.api.key:sk-eVgMqC874Gtm6XoQ0TFqirpDrrfVdZSZpEGyD9HiTeWaT01u}")
+    @Value("${ai.api.key:}")
     private String aiApiKey;
 
     @Value("${ai.api.model:bpModel-1}")

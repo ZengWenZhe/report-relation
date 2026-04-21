@@ -1,5 +1,6 @@
 package com.xgjktech.reportrelation.service;
 
+import java.util.Collections;
 import java.util.concurrent.TimeUnit;
 
 import javax.annotation.Resource;
@@ -16,7 +17,10 @@ import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.scripting.support.ResourceScriptSource;
 import org.springframework.stereotype.Service;
 
 import lombok.extern.slf4j.Slf4j;
@@ -36,6 +40,17 @@ public class AiClient {
 
     @Resource
     private StringRedisTemplate stringRedisTemplate;
+
+    private volatile OkHttpClient sharedClient;
+
+    private volatile int currentTimeout = 0;
+
+    private final DefaultRedisScript<Long> rateLimitScript = new DefaultRedisScript<>();
+
+    {
+        rateLimitScript.setScriptSource(new ResourceScriptSource(new ClassPathResource("lua/rate_limit.lua")));
+        rateLimitScript.setResultType(Long.class);
+    }
 
     /**
      * @return AI 回复文本，异常时返回 null
@@ -66,13 +81,6 @@ public class AiClient {
         messages.add(userMsg);
         body.put("messages", messages);
 
-        int timeout = nacosConfig.getAiApiTimeoutSeconds() != null ? nacosConfig.getAiApiTimeoutSeconds() : 120;
-        OkHttpClient client = new OkHttpClient.Builder()
-                .connectTimeout(30, TimeUnit.SECONDS)
-                .readTimeout(timeout, TimeUnit.SECONDS)
-                .writeTimeout(30, TimeUnit.SECONDS)
-                .build();
-
         Request request = new Request.Builder()
                 .url(nacosConfig.getAiApiUrl())
                 .addHeader("Content-Type", "application/json")
@@ -80,7 +88,7 @@ public class AiClient {
                 .post(RequestBody.create(JSON_MEDIA, body.toJSONString()))
                 .build();
 
-        try (Response response = client.newCall(request).execute()) {
+        try (Response response = getOrRebuildClient().newCall(request).execute()) {
             if (!response.isSuccessful()) {
                 log.error("AI接口HTTP错误, code={}, body={}", response.code(),
                         response.body() != null ? response.body().string() : "null");
@@ -131,27 +139,58 @@ public class AiClient {
      * 只读预检：当前窗口是否已达限流上限（不消耗配额）
      */
     public boolean isRateLimited() {
-        int limit = nacosConfig.getAiRateLimitHourly() != null ? nacosConfig.getAiRateLimitHourly() : 2000;
+        int limit = getEffectiveLimit();
+        if (limit <= 0) {
+            return false;
+        }
         long windowStart = System.currentTimeMillis() - ONE_HOUR_MS;
         stringRedisTemplate.opsForZSet().removeRangeByScore(RATE_LIMIT_KEY, 0, windowStart);
         Long count = stringRedisTemplate.opsForZSet().zCard(RATE_LIMIT_KEY);
         return count != null && count >= limit;
     }
 
+    /**
+     * Lua 原子限流：清理过期 + 判断 + 写入在同一脚本内完成
+     */
     private boolean acquireRateLimit() {
-        int limit = nacosConfig.getAiRateLimitHourly() != null ? nacosConfig.getAiRateLimitHourly() : 2000;
+        int limit = getEffectiveLimit();
+        if (limit <= 0) {
+            return true;
+        }
         long now = System.currentTimeMillis();
         long windowStart = now - ONE_HOUR_MS;
+        String member = now + ":" + Thread.currentThread().getId();
 
-        stringRedisTemplate.opsForZSet().removeRangeByScore(RATE_LIMIT_KEY, 0, windowStart);
+        Long result = stringRedisTemplate.execute(
+                rateLimitScript,
+                Collections.singletonList(RATE_LIMIT_KEY),
+                String.valueOf(limit),
+                String.valueOf(windowStart),
+                String.valueOf(now),
+                member);
 
-        Long count = stringRedisTemplate.opsForZSet().zCard(RATE_LIMIT_KEY);
-        if (count != null && count >= limit) {
-            return false;
+        return result != null && result == 1L;
+    }
+
+    private int getEffectiveLimit() {
+        return nacosConfig.getAiRateLimitHourly() != null ? nacosConfig.getAiRateLimitHourly() : 2000;
+    }
+
+    private OkHttpClient getOrRebuildClient() {
+        int timeout = nacosConfig.getAiApiTimeoutSeconds() != null ? nacosConfig.getAiApiTimeoutSeconds() : 120;
+        if (sharedClient == null || timeout != currentTimeout) {
+            synchronized (this) {
+                if (sharedClient == null || timeout != currentTimeout) {
+                    sharedClient = new OkHttpClient.Builder()
+                            .connectTimeout(30, TimeUnit.SECONDS)
+                            .readTimeout(timeout, TimeUnit.SECONDS)
+                            .writeTimeout(30, TimeUnit.SECONDS)
+                            .build();
+                    currentTimeout = timeout;
+                    log.info("OkHttpClient已创建/重建，readTimeout={}s", timeout);
+                }
+            }
         }
-
-        stringRedisTemplate.opsForZSet().add(RATE_LIMIT_KEY, String.valueOf(now) + ":" + Thread.currentThread().getId(), now);
-        stringRedisTemplate.expire(RATE_LIMIT_KEY, 1, TimeUnit.HOURS);
-        return true;
+        return sharedClient;
     }
 }
