@@ -2,12 +2,12 @@ package com.xgjktech.reportrelation.service;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -16,6 +16,7 @@ import javax.annotation.Resource;
 
 import com.xgjktech.reportrelation.base.NacosConfig;
 import com.xgjktech.reportrelation.data.entity.ReportRelationBusinessEntity;
+import com.xgjktech.reportrelation.exception.RateLimitException;
 import com.xgjktech.reportrelation.strategy.ExtractStrategy;
 import com.xgjktech.reportrelation.strategy.ExtractStrategyRouter;
 
@@ -29,7 +30,7 @@ import lombok.extern.slf4j.Slf4j;
 @Component
 public class ExtractScheduleJob {
 
-    private static final int BATCH_SIZE = 50;
+    private static final int DEFAULT_BATCH_SIZE = 100;
 
     @Resource
     private NacosConfig nacosConfig;
@@ -45,6 +46,9 @@ public class ExtractScheduleJob {
 
     @Resource
     private ExtractSchemaService extractSchemaService;
+
+    @Resource
+    private AiClient aiClient;
 
     private volatile ExecutorService extractExecutor;
 
@@ -65,13 +69,22 @@ public class ExtractScheduleJob {
         }
     }
 
-    @Scheduled(fixedDelayString = "${extract.schedule.fixedDelay:1800000}")
+    @Scheduled(fixedDelayString = "${extract.schedule.fixedDelay:60000}")
     public void execute() {
         if (!Boolean.TRUE.equals(nacosConfig.getJobEnable())) {
             return;
         }
+        if (!Boolean.TRUE.equals(nacosConfig.getExtractEnable())) {
+            log.info("提取开关已关闭(extract.enable=false)，跳过本轮");
+            return;
+        }
+        if (aiClient.isRateLimited()) {
+            log.info("AI限流窗口未恢复，跳过本轮调度");
+            return;
+        }
 
-        List<Long> reportIds = reportExtractQueueService.batchDequeue(BATCH_SIZE);
+        int batchSize = nacosConfig.getExtractBatchSize() != null ? nacosConfig.getExtractBatchSize() : DEFAULT_BATCH_SIZE;
+        List<Long> reportIds = reportExtractQueueService.batchDequeue(batchSize);
         if (CollectionUtils.isEmpty(reportIds)) {
             return;
         }
@@ -79,24 +92,15 @@ public class ExtractScheduleJob {
         log.info("定时任务取出{}条待提取reportId", reportIds.size());
 
         List<ReportRelationBusinessEntity> records = reportRelationBusinessService.listByReportIds(reportIds);
-
-        Set<Long> foundReportIds = records.stream()
-                .map(ReportRelationBusinessEntity::getReportId)
-                .collect(Collectors.toSet());
-        reportIds.stream()
-                .filter(id -> !foundReportIds.contains(id))
-                .forEach(id -> {
-                    reportExtractQueueService.enqueue(id);
-                    log.warn("reportId={}在DB中暂无关联记录，重新入队等待下次处理", id);
-                });
-
         if (records.isEmpty()) {
+            log.warn("所有reportId在DB中无关联记录，跳过：{}", reportIds);
             return;
         }
 
         ExecutorService executor = getOrRebuildExecutor();
         AtomicInteger successCount = new AtomicInteger(0);
         AtomicInteger failCount = new AtomicInteger(0);
+        AtomicBoolean rateLimited = new AtomicBoolean(false);
 
         Map<Long, List<ReportRelationBusinessEntity>> byReportId = records.stream()
                 .collect(Collectors.groupingBy(ReportRelationBusinessEntity::getReportId));
@@ -108,10 +112,20 @@ public class ExtractScheduleJob {
                     Long reportId = reportGroup.getKey();
                     List<ReportRelationBusinessEntity> groupRecords = reportGroup.getValue();
 
+                    if (rateLimited.get()) {
+                        reportExtractQueueService.enqueue(reportId);
+                        return;
+                    }
+
                     String reportContent = contentCache.computeIfAbsent(reportId,
                             id -> extractSchemaService.fetchReportContent(id));
 
                     for (ReportRelationBusinessEntity record : groupRecords) {
+                        if (rateLimited.get()) {
+                            reportExtractQueueService.enqueue(reportId);
+                            return;
+                        }
+
                         ExtractStrategy strategy = extractStrategyRouter.getStrategy(record.getBizType());
                         if (strategy == null) {
                             log.warn("bizType={}无对应策略，跳过record id={}", record.getBizType(), record.getId());
@@ -124,6 +138,11 @@ public class ExtractScheduleJob {
                             } else {
                                 failCount.incrementAndGet();
                             }
+                        } catch (RateLimitException e) {
+                            rateLimited.set(true);
+                            reportExtractQueueService.enqueue(reportId);
+                            log.warn("AI限流触发，reportId={}回塞队列，本轮剩余任务将跳过", reportId);
+                            return;
                         } catch (Exception e) {
                             failCount.incrementAndGet();
                             log.error("提取失败，id={}, reportId={}, bizType={}, error={}",
@@ -134,8 +153,12 @@ public class ExtractScheduleJob {
                 }, executor))
                 .toArray(CompletableFuture[]::new)).join();
 
-        log.info("定时提取完成，总记录={}，去重reportId={}，成功={}，失败={}",
-                records.size(), byReportId.size(), successCount.get(), failCount.get());
+        if (rateLimited.get()) {
+            log.warn("本轮因AI限流提前终止，成功={}，失败={}，剩余已回塞队列", successCount.get(), failCount.get());
+        } else {
+            log.info("定时提取完成，总记录={}，去重reportId={}，成功={}，失败={}",
+                    records.size(), byReportId.size(), successCount.get(), failCount.get());
+        }
     }
 
     private ExecutorService getOrRebuildExecutor() {

@@ -9,15 +9,13 @@ import javax.annotation.Resource;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.xgjktech.cloud.common.Result;
-import com.xgjktech.reportrelation.base.feign.FilegptFeign;
 import com.xgjktech.reportrelation.base.feign.WorkReportFeign;
 import com.xgjktech.reportrelation.base.model.ReportListSimpleInfoByIdsParam;
 import com.xgjktech.reportrelation.base.model.ReportSimpleInfoForGptVO;
-import com.xgjktech.reportrelation.base.param.AiData;
-import com.xgjktech.reportrelation.base.param.AiModel;
 import com.xgjktech.reportrelation.data.entity.ReportExtractConfigEntity;
 import com.xgjktech.reportrelation.data.entity.ReportRelationBusinessEntity;
 import com.xgjktech.reportrelation.enums.ExtractConfigCodeEnum;
+import com.xgjktech.reportrelation.exception.RateLimitException;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Service;
@@ -33,10 +31,6 @@ import lombok.extern.slf4j.Slf4j;
 @Service
 public class ExtractSchemaService {
 
-    private static final int AI_TYPE = 106;
-
-    private static final String BIZ_CODE = "report_extract_schema";
-
     @Resource
     private ReportRelationBusinessService reportRelationBusinessService;
 
@@ -47,7 +41,7 @@ public class ExtractSchemaService {
     private WorkReportFeign workReportFeign;
 
     @Resource
-    private FilegptFeign filegptFeign;
+    private AiClient aiClient;
 
 
     /**
@@ -68,6 +62,10 @@ public class ExtractSchemaService {
 
         try {
             return doExtract(record, configCode, bizContext, contextPlaceholder, preloadedContent);
+        } catch (RateLimitException e) {
+            log.warn("AI限流，id={}, reportId={}，状态回退为未提取", record.getId(), record.getReportId());
+            reportRelationBusinessService.updateExtractStatus(record.getId(), 0, null, null);
+            throw e;
         } catch (Exception e) {
             log.error("结构化提取异常，id={}, reportId={}, error={}",
                     record.getId(), record.getReportId(), e.getMessage(), e);
@@ -143,18 +141,11 @@ public class ExtractSchemaService {
     }
 
     private String callAi(String prompt) {
-        AiModel model = new AiModel();
-        model.setType(AI_TYPE);
-        model.setPrompt(prompt);
-        model.setTemperature(0);
-        model.setBizCode(BIZ_CODE);
-
-        Result<AiData> result = filegptFeign.getScript(model);
-        if (result == null || result.getData() == null || StringUtils.isBlank(result.getData().getAnswer())) {
+        String rawAnswer = aiClient.chat(prompt);
+        if (StringUtils.isBlank(rawAnswer)) {
             return null;
         }
-
-        return cleanAiJsonOutput(result.getData().getAnswer());
+        return cleanAiJsonOutput(rawAnswer);
     }
 
     private JSONObject parseJson(String json) {

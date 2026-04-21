@@ -102,6 +102,7 @@ public class ReportRelationBusinessService extends AbstractBaseService<ReportRel
             this.lambdaUpdate()
                     .eq(ReportRelationBusinessEntity::getId, id)
                     .set(ReportRelationBusinessEntity::getRetryCount, 0)
+                    .set(ReportRelationBusinessEntity::getUpdateTime, new Timestamp(System.currentTimeMillis()))
                     .update();
         }
     }
@@ -200,5 +201,43 @@ public class ReportRelationBusinessService extends AbstractBaseService<ReportRel
                         .stream())
                 .map(e -> e.getReportId() + ":" + e.getBizType() + ":" + e.getBizId())
                 .collect(Collectors.toSet());
+    }
+
+    /**
+     * 查询需要全量初始化提取的 distinct reportId 列表
+     *
+     * @param forceReExtract true=所有记录, false=仅 extract_status IN (0,3) 的
+     */
+    public List<Long> listReportIdsForInit(boolean forceReExtract) {
+        if (forceReExtract) {
+            return this.lambdaQuery()
+                    .select(ReportRelationBusinessEntity::getReportId)
+                    .eq(ReportRelationBusinessEntity::getDeleted, false)
+                    .list()
+                    .stream()
+                    .map(ReportRelationBusinessEntity::getReportId)
+                    .distinct()
+                    .collect(Collectors.toList());
+        }
+        return this.lambdaQuery()
+                .select(ReportRelationBusinessEntity::getReportId)
+                .eq(ReportRelationBusinessEntity::getDeleted, false)
+                .in(ReportRelationBusinessEntity::getExtractStatus, Arrays.asList(0, 3))
+                .list()
+                .stream()
+                .map(ReportRelationBusinessEntity::getReportId)
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 重置指定状态记录的 retryCount 为 0
+     */
+    public void resetRetryCount(List<Integer> statusList) {
+        this.lambdaUpdate()
+                .eq(ReportRelationBusinessEntity::getDeleted, false)
+                .in(ReportRelationBusinessEntity::getExtractStatus, statusList)
+                .set(ReportRelationBusinessEntity::getRetryCount, 0)
+                .update();
     }
 }

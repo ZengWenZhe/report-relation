@@ -1,5 +1,6 @@
 package com.xgjktech.reportrelation.controller;
 
+import java.util.Arrays;
 import java.util.List;
 
 import javax.annotation.Resource;
@@ -14,12 +15,14 @@ import com.xgjktech.reportrelation.strategy.ExtractStrategyRouter;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
 import io.swagger.annotations.ApiParam;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+@Slf4j
 @Api(tags = "汇报关联管理")
 @RestController
 @RequestMapping("/reportRelation")
@@ -81,5 +84,24 @@ public class ReportRelationController {
     public Result<List<Long>> queueReportIds(
             @ApiParam("最大返回条数") @RequestParam(defaultValue = "100") Integer limit) {
         return Result.success(reportExtractQueueService.listQueuedReportIds(limit));
+    }
+
+    @ApiOperation("全量初始化：将存量记录的reportId批量入队，由定时任务消费提取")
+    @PostMapping("/initExtractAll")
+    public Result<Integer> initExtractAll(
+            @ApiParam("是否强制重新提取已成功的") @RequestParam(defaultValue = "false") Boolean forceReExtract) {
+
+        List<Long> reportIds = reportRelationBusinessService.listReportIdsForInit(forceReExtract);
+        if (reportIds.isEmpty()) {
+            return Result.success(0);
+        }
+
+        if (!forceReExtract) {
+            reportRelationBusinessService.resetRetryCount(Arrays.asList(0, 3));
+        }
+
+        reportIds.forEach(reportExtractQueueService::enqueue);
+        log.info("全量初始化入队完成，forceReExtract={}, 入队reportId数={}", forceReExtract, reportIds.size());
+        return Result.success(reportIds.size());
     }
 }
