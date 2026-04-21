@@ -5,11 +5,11 @@ import java.time.LocalDateTime;
 import javax.annotation.Resource;
 
 import com.alibaba.fastjson.JSON;
-import com.xgjktech.cloud.common.Result;
-import com.xgjktech.reportrelation.base.feign.PmsFeign;
 import com.xgjktech.reportrelation.base.param.ReportObjectParam;
 import com.xgjktech.reportrelation.data.entity.ReportRelationBusinessEntity;
 import com.xgjktech.reportrelation.data.vo.ReportObjectChangedVO;
+import com.xgjktech.reportrelation.strategy.BizTypeHandler;
+import com.xgjktech.reportrelation.strategy.BizTypeHandlerRouter;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.springframework.amqp.core.ExchangeTypes;
@@ -21,20 +21,9 @@ import org.springframework.stereotype.Service;
 
 import lombok.extern.slf4j.Slf4j;
 
-/**
- * 汇报关联事件监听服务
- * 监听工作汇报系统的MQ事件，处理汇报与业务对象的关联变更
- *
- * @author zengwenzhe
- * @since 2026-04-20
- */
 @Slf4j
 @Service
 public class ReportRelationEventService {
-
-    private static final Long BP_TYPE_ID = 52L;
-
-    private static final String BIZ_TYPE_BP = "BP";
 
     private static final String EX_CWORK_REPORT_OBJECT_CHANGE = "ex_cwork_report_object_change";
 
@@ -42,11 +31,11 @@ public class ReportRelationEventService {
     private ReportRelationBusinessService reportRelationBusinessService;
 
     @Resource
-    private PmsFeign pmsFeign;
+    private ReportExtractQueueService reportExtractQueueService;
 
-    /**
-     * 监听汇报关联业务对象变更消息
-     */
+    @Resource
+    private BizTypeHandlerRouter bizTypeHandlerRouter;
+
     @RabbitListener(bindings = @QueueBinding(
             value = @Queue(name = "queue_report_relation_report_object_changed"),
             exchange = @Exchange(name = EX_CWORK_REPORT_OBJECT_CHANGE, type = ExchangeTypes.FANOUT)))
@@ -60,15 +49,11 @@ public class ReportRelationEventService {
             }
 
             if (CollectionUtils.isNotEmpty(vo.getAddObjectList())) {
-                vo.getAddObjectList().stream()
-                        .filter(obj -> BP_TYPE_ID.equals(obj.getTypeId()))
-                        .forEach(obj -> handleAddRelation(vo, obj));
+                vo.getAddObjectList().forEach(obj -> handleAddRelation(vo, obj));
             }
 
             if (CollectionUtils.isNotEmpty(vo.getDeleteObjectList())) {
-                vo.getDeleteObjectList().stream()
-                        .filter(obj -> BP_TYPE_ID.equals(obj.getTypeId()))
-                        .forEach(obj -> handleDeleteRelation(vo, obj));
+                vo.getDeleteObjectList().forEach(obj -> handleDeleteRelation(vo, obj));
             }
 
         } catch (Exception e) {
@@ -77,23 +62,30 @@ public class ReportRelationEventService {
     }
 
     private void handleAddRelation(ReportObjectChangedVO vo, ReportObjectParam obj) {
+        BizTypeHandler handler = bizTypeHandlerRouter.getHandler(obj.getTypeId());
+        if (handler == null) {
+            log.debug("typeId={}无对应处理器，跳过", obj.getTypeId());
+            return;
+        }
+
         try {
-            Long bpTaskId = Long.parseLong(obj.getBizId());
+            Long bizId = Long.parseLong(obj.getBizId());
+            String bizType = handler.bizType();
 
             boolean exists = reportRelationBusinessService.existsRelation(
-                    vo.getReportId(), BIZ_TYPE_BP, bpTaskId);
+                    vo.getReportId(), bizType, bizId);
             if (exists) {
-                log.info("关联关系已存在，reportId={}, bpTaskId={}", vo.getReportId(), bpTaskId);
+                log.info("关联关系已存在，reportId={}, bizType={}, bizId={}", vo.getReportId(), bizType, bizId);
                 return;
             }
 
-            Long corpId = fetchTaskCorpId(bpTaskId);
+            Long corpId = handler.fetchCorpId(bizId);
 
             ReportRelationBusinessEntity entity = new ReportRelationBusinessEntity();
             entity.setReportId(vo.getReportId());
             entity.setReportName(vo.getMain());
-            entity.setBizType(BIZ_TYPE_BP);
-            entity.setBizId(bpTaskId);
+            entity.setBizType(bizType);
+            entity.setBizId(bizId);
             entity.setExtractStatus(0);
             entity.setReportCreateTime(
                     vo.getReportTime() != null ? vo.getReportTime().toLocalDateTime() : null);
@@ -104,44 +96,40 @@ public class ReportRelationEventService {
             entity.setUpdateBy(vo.getCurrentEmpId());
 
             reportRelationBusinessService.save(entity);
-            log.info("新增汇报关联成功，reportId={}, bpTaskId={}, corpId={}", vo.getReportId(), bpTaskId, corpId);
+            reportExtractQueueService.enqueue(vo.getReportId());
+            log.info("新增汇报关联成功并入提取队列，reportId={}, bizType={}, bizId={}, corpId={}",
+                    vo.getReportId(), bizType, bizId, corpId);
 
         } catch (NumberFormatException e) {
-            log.error("BP任务ID格式错误，bizId={}", obj.getBizId());
+            log.error("业务ID格式错误，bizId={}", obj.getBizId());
         } catch (Exception e) {
             log.error("处理新增汇报关联异常，reportId={}, bizId={}, error={}",
                     vo.getReportId(), obj.getBizId(), e.getMessage(), e);
         }
     }
 
-    private Long fetchTaskCorpId(Long taskId) {
-        try {
-            Result<Long> result = pmsFeign.getTaskCorpId(taskId);
-            return (result != null) ? result.getData() : null;
-        } catch (Exception e) {
-            log.warn("获取任务corpId失败，taskId={}", taskId, e);
-            return null;
-        }
-    }
-
-    /**
-     * 处理删除汇报关联（逻辑删除）
-     */
     private void handleDeleteRelation(ReportObjectChangedVO vo, ReportObjectParam obj) {
+        BizTypeHandler handler = bizTypeHandlerRouter.getHandler(obj.getTypeId());
+        if (handler == null) {
+            log.debug("typeId={}无对应处理器，跳过", obj.getTypeId());
+            return;
+        }
+
         try {
-            Long bpTaskId = Long.parseLong(obj.getBizId());
+            Long bizId = Long.parseLong(obj.getBizId());
+            String bizType = handler.bizType();
 
             boolean updated = reportRelationBusinessService.logicDeleteRelation(
-                    vo.getReportId(), BIZ_TYPE_BP, bpTaskId, vo.getCurrentEmpId());
+                    vo.getReportId(), bizType, bizId, vo.getCurrentEmpId());
 
             if (updated) {
-                log.info("删除汇报关联成功，reportId={}, bpTaskId={}", vo.getReportId(), bpTaskId);
+                log.info("删除汇报关联成功，reportId={}, bizType={}, bizId={}", vo.getReportId(), bizType, bizId);
             } else {
-                log.info("汇报关联不存在或已删除，reportId={}, bpTaskId={}", vo.getReportId(), bpTaskId);
+                log.info("汇报关联不存在或已删除，reportId={}, bizType={}, bizId={}", vo.getReportId(), bizType, bizId);
             }
 
         } catch (NumberFormatException e) {
-            log.error("BP任务ID格式错误，bizId={}", obj.getBizId());
+            log.error("业务ID格式错误，bizId={}", obj.getBizId());
         } catch (Exception e) {
             log.error("处理删除汇报关联异常，reportId={}, bizId={}, error={}",
                     vo.getReportId(), obj.getBizId(), e.getMessage(), e);

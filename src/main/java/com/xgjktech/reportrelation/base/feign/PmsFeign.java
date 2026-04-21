@@ -10,7 +10,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 
 /**
- * PMS服务 Feign Client（获取BP上下文、历史关联数据）
+ * PMS服务 Feign Client
  *
  * @author zengwenzhe
  * @since 2026-04-20

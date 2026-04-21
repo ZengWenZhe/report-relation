@@ -8,26 +8,23 @@ import io.swagger.annotations.ApiModelProperty;
 import lombok.Getter;
 import lombok.Setter;
 
-/**
- * 结构化提取提示词配置实体
- *
- * @author zengwenzhe
- * @since 2026-04-20
- */
 @Getter
 @Setter
-@ApiModel(description = "结构化提取提示词配置")
-@TableName("extract_prompt_config")
-public class ExtractPromptConfigEntity extends BaseEntity {
+@ApiModel(description = "结构化提取配置")
+@TableName("report_extract_config")
+public class ReportExtractConfigEntity extends BaseEntity {
 
-    @ApiModelProperty("提示词编码，唯一标识")
-    private String promptCode;
+    @ApiModelProperty("配置编码，唯一标识")
+    private String configCode;
 
-    @ApiModelProperty("提示词名称")
-    private String promptName;
+    @ApiModelProperty("配置名称")
+    private String configName;
 
-    @ApiModelProperty("提示词模板内容")
-    private String promptContent;
+    @ApiModelProperty("配置内容（提示词模板等）")
+    private String configContent;
+
+    @ApiModelProperty("处理结果（JSON/Markdown）")
+    private String extractResult;
 
     @ApiModelProperty("适用业务类型")
     private String bizType;

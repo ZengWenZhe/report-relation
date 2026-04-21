@@ -1,10 +1,7 @@
 package com.xgjktech.reportrelation.service;
 
 import java.sql.Timestamp;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 import com.xgjktech.common.base.AbstractBaseService;
@@ -92,13 +89,29 @@ public class ReportRelationBusinessService extends AbstractBaseService<ReportRel
     }
 
     /**
+     * 根据reportId列表查询所有未删除的关联记录
+     */
+    public List<ReportRelationBusinessEntity> listByReportIds(Collection<Long> reportIds) {
+        if (CollectionUtils.isEmpty(reportIds)) {
+            return Collections.emptyList();
+        }
+        return ListUtils.partition(new java.util.ArrayList<>(reportIds), 500).stream()
+                .flatMap(batch -> this.lambdaQuery()
+                        .in(ReportRelationBusinessEntity::getReportId, batch)
+                        .eq(ReportRelationBusinessEntity::getDeleted, false)
+                        .list()
+                        .stream())
+                .collect(Collectors.toList());
+    }
+
+    /**
      * 根据批量bizId查询所有未删除的关联记录
      */
     public List<ReportRelationBusinessEntity> listByBizIds(String bizType, Collection<Long> bizIds) {
         if (CollectionUtils.isEmpty(bizIds)) {
             return Collections.emptyList();
         }
-        return ListUtils.partition(new java.util.ArrayList<>(bizIds), 500).stream()
+        return ListUtils.partition(new ArrayList<>(bizIds), 500).stream()
                 .flatMap(batch -> this.lambdaQuery()
                         .eq(ReportRelationBusinessEntity::getBizType, bizType)
                         .in(ReportRelationBusinessEntity::getBizId, batch)

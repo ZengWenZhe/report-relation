@@ -28,10 +28,10 @@ public class ReportRelationBusinessEntity extends BaseEntity {
     @ApiModelProperty("汇报名称/标题")
     private String reportName;
 
-    @ApiModelProperty("业务类型：BP")
+    @ApiModelProperty("业务类型")
     private String bizType;
 
-    @ApiModelProperty("业务ID（BP 任务 ID）")
+    @ApiModelProperty("业务ID")
     private Long bizId;
 
     @ApiModelProperty("结构化提取结果 JSON")

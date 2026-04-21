@@ -1,30 +1,22 @@
 package com.xgjktech.reportrelation.service;
 
-import java.util.Collection;
 import java.util.Collections;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import javax.annotation.PreDestroy;
 import javax.annotation.Resource;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.xgjktech.cloud.common.Result;
 import com.xgjktech.reportrelation.base.feign.FilegptFeign;
-import com.xgjktech.reportrelation.base.feign.PmsFeign;
 import com.xgjktech.reportrelation.base.feign.WorkReportFeign;
 import com.xgjktech.reportrelation.base.model.ReportListSimpleInfoByIdsParam;
 import com.xgjktech.reportrelation.base.model.ReportSimpleInfoForGptVO;
 import com.xgjktech.reportrelation.base.param.AiData;
 import com.xgjktech.reportrelation.base.param.AiModel;
 import com.xgjktech.reportrelation.data.entity.ReportRelationBusinessEntity;
-import com.xgjktech.reportrelation.enums.ExtractPromptCodeEnum;
+import com.xgjktech.reportrelation.enums.ExtractConfigCodeEnum;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Service;
@@ -32,11 +24,9 @@ import org.springframework.stereotype.Service;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * 汇报结构化提取服务
- * 负责调度AI对汇报内容进行结构化提取
- *
- * @author zengwenzhe
- * @since 2026-04-20
+ * 公共AI结构化提取服务
+ * 负责: 获取汇报内容、调用AI、清理JSON输出、更新提取状态
+ * 不含任何业务特有逻辑(如BP上下文获取等)
  */
 @Slf4j
 @Service
@@ -46,108 +36,32 @@ public class ExtractSchemaService {
 
     private static final String BIZ_CODE = "report_extract_schema";
 
-    private static final int DEFAULT_BATCH_SIZE = 50;
-
-    private static final int CONCURRENT_THREADS = 12;
-
-    private final ExecutorService extractExecutor = Executors.newFixedThreadPool(CONCURRENT_THREADS);
-
     @Resource
     private ReportRelationBusinessService reportRelationBusinessService;
 
     @Resource
-    private ExtractPromptConfigService extractPromptConfigService;
+    private ReportExtractConfigService reportExtractConfigService;
 
     @Resource
     private WorkReportFeign workReportFeign;
 
     @Resource
-    private PmsFeign pmsFeign;
-
-    @Resource
     private FilegptFeign filegptFeign;
 
-    @PreDestroy
-    public void shutdown() {
-        extractExecutor.shutdown();
-    }
-
     /**
-     * 批量提取（并发执行，线程数=CONCURRENT_THREADS）
+     * 通用提取流程：获取汇报内容 -> 由调用方提供业务上下文组装prompt -> 调AI -> 解析结果
      *
-     * @param limit 本次最大处理条数，0或负数使用默认值
-     * @return 成功提取的数量
+     * @param record        关联记录
+     * @param configCode    配置编码(决定prompt模板)
+     * @param bizContext    业务上下文JSON(由各策略提供, 用于替换模板中的占位符)
+     * @param contextPlaceholder 模板中业务上下文的占位符名称
      */
-    public int batchExtract(int limit) {
-        int batchSize = limit > 0 ? limit : DEFAULT_BATCH_SIZE;
-        List<ReportRelationBusinessEntity> pendingList =
-                reportRelationBusinessService.listPendingExtract(batchSize);
-
-        if (pendingList.isEmpty()) {
-            log.info("无待提取记录");
-            return 0;
-        }
-
-        log.info("开始批量提取，待处理数量={}，并发线程数={}", pendingList.size(), CONCURRENT_THREADS);
-        AtomicInteger successCount = new AtomicInteger(0);
-
-        CompletableFuture.allOf(pendingList.stream()
-                .map(record -> CompletableFuture.runAsync(() -> {
-                    try {
-                        extractSingle(record);
-                        successCount.incrementAndGet();
-                    } catch (Exception e) {
-                        log.error("提取失败，id={}, reportId={}, bizId={}, error={}",
-                                record.getId(), record.getReportId(), record.getBizId(), e.getMessage(), e);
-                        reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
-                    }
-                }, extractExecutor)).toArray(CompletableFuture[]::new)).join();
-
-        log.info("批量提取完成，总数={}，成功={}", pendingList.size(), successCount.get());
-        return successCount.get();
-    }
-
-    /**
-     * 根据批量业务ID重新生成结构化extractSchema
-     *
-     * @param bizType 业务类型
-     * @param bizIds  业务ID集合
-     * @return 成功提取的数量
-     */
-    public int reExtractByBizIds(String bizType, Collection<Long> bizIds) {
-        List<ReportRelationBusinessEntity> records =
-                reportRelationBusinessService.listByBizIds(bizType, bizIds);
-
-        if (records.isEmpty()) {
-            log.info("根据bizIds未查到关联记录，bizType={}, bizIds={}", bizType, bizIds);
-            return 0;
-        }
-
-        log.info("开始根据bizIds重新提取extractSchema，记录数={}，并发线程数={}", records.size(), CONCURRENT_THREADS);
-        AtomicInteger successCount = new AtomicInteger(0);
-
-        CompletableFuture.allOf(records.stream()
-                .map(record -> CompletableFuture.runAsync(() -> {
-                    try {
-                        extractSingle(record);
-                        successCount.incrementAndGet();
-                    } catch (Exception e) {
-                        log.error("重新提取失败，id={}, reportId={}, bizId={}, error={}",
-                                record.getId(), record.getReportId(), record.getBizId(), e.getMessage(), e);
-                        reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
-                    }
-                }, extractExecutor)).toArray(CompletableFuture[]::new)).join();
-
-        log.info("根据bizIds重新提取完成，总数={}，成功={}", records.size(), successCount.get());
-        return successCount.get();
-    }
-
-    /**
-     * 单条提取
-     */
-    public void extractSingle(ReportRelationBusinessEntity record) {
-        log.info("开始结构化提取，id={}, reportId={}, bizId={}",
-                record.getId(), record.getReportId(), record.getBizId());
+    public void extractSingle(ReportRelationBusinessEntity record,
+                              ExtractConfigCodeEnum configCode,
+                              String bizContext,
+                              String contextPlaceholder) {
+        log.info("开始结构化提取，id={}, reportId={}, bizId={}, bizType={}",
+                record.getId(), record.getReportId(), record.getBizId(), record.getBizType());
 
         reportRelationBusinessService.updateExtractStatus(record.getId(), 1, null);
 
@@ -158,57 +72,36 @@ public class ExtractSchemaService {
             return;
         }
 
-        String bpContextJson = fetchBpContext(record.getBizId());
-
-        String promptTemplate = extractPromptConfigService.getPromptByCode(
-                ExtractPromptCodeEnum.REPORT_EXTRACT_SCHEMA);
+        String promptTemplate = reportExtractConfigService.getConfigContentByCode(configCode);
         String prompt = promptTemplate
                 .replace("{{REPORT_CONTENT}}", reportContent)
-                .replace("{{BP_CONTEXT}}", StringUtils.defaultString(bpContextJson, "{}"));
+                .replace(contextPlaceholder, StringUtils.defaultString(bizContext, "{}"));
 
-        AiModel model = new AiModel();
-        model.setType(AI_TYPE);
-        model.setPrompt(prompt);
-        model.setTemperature(0);
-        model.setBizCode(BIZ_CODE);
-
-        Result<AiData> result = filegptFeign.getScript(model);
-        if (result == null || result.getData() == null || StringUtils.isBlank(result.getData().getAnswer())) {
+        String answer = callAi(prompt);
+        if (answer == null) {
             log.warn("AI结构化提取返回为空，reportId={}", record.getReportId());
             reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
             return;
         }
 
-        String answer = cleanAiJsonOutput(result.getData().getAnswer());
         log.info("AI结构化提取成功，reportId={}, answer前100字={}",
                 record.getReportId(), StringUtils.abbreviate(answer, 100));
 
-        JSONObject jsonResult;
-        try {
-            jsonResult = JSON.parseObject(answer);
-        } catch (Exception e) {
-            log.error("AI返回结果JSON解析失败，reportId={}, answer={}", record.getReportId(), answer, e);
+        JSONObject jsonResult = parseJson(answer);
+        if (jsonResult == null) {
+            log.error("AI返回结果JSON解析失败，reportId={}, answer={}", record.getReportId(), answer);
             reportRelationBusinessService.updateExtractStatus(record.getId(), 3, null);
             return;
         }
 
-        String relevance = jsonResult.getString("relevance");
-        if ("none".equals(relevance) || "weak".equals(relevance)) {
-            log.info("汇报与举措相关性不足，relevance={}，reason={}，reportId={}, bizId={}",
-                    relevance, jsonResult.getString("relevance_reason"),
-                    record.getReportId(), record.getBizId());
-            reportRelationBusinessService.updateExtractStatus(record.getId(), 4, answer);
-            return;
-        }
+        jsonResult.put("authorId", record.getCreateBy());
+        String finalAnswer = jsonResult.toJSONString();
 
-        reportRelationBusinessService.updateExtractStatus(record.getId(), 2, answer);
+        reportRelationBusinessService.updateExtractStatus(record.getId(), 2, finalAnswer);
         log.info("结构化提取完成，id={}, reportId={}", record.getId(), record.getReportId());
     }
 
-    /**
-     * 获取汇报完整内容（正文+附件+回复）
-     */
-    private String fetchReportContent(Long reportId) {
+    public String fetchReportContent(Long reportId) {
         try {
             ReportListSimpleInfoByIdsParam param = new ReportListSimpleInfoByIdsParam();
             param.setReportIds(Collections.singletonList(reportId));
@@ -230,25 +123,31 @@ public class ExtractSchemaService {
         }
     }
 
-    /**
-     * 获取BP上下文 markdown
-     */
-    private String fetchBpContext(Long taskId) {
-        try {
-            Result<String> result = pmsFeign.getBpContext(taskId);
-            if (result != null && StringUtils.isNotBlank(result.getData())) {
-                return result.getData();
-            }
-        } catch (Exception e) {
-            log.error("获取BP上下文失败，taskId={}, error={}", taskId, e.getMessage(), e);
+    private String callAi(String prompt) {
+        AiModel model = new AiModel();
+        model.setType(AI_TYPE);
+        model.setPrompt(prompt);
+        model.setTemperature(0);
+        model.setBizCode(BIZ_CODE);
+
+        Result<AiData> result = filegptFeign.getScript(model);
+        if (result == null || result.getData() == null || StringUtils.isBlank(result.getData().getAnswer())) {
+            return null;
         }
-        return null;
+
+        return cleanAiJsonOutput(result.getData().getAnswer());
     }
 
-    /**
-     * 清理AI返回的JSON（去除markdown代码块标记，提取第一个完整JSON对象）
-     */
-    private String cleanAiJsonOutput(String raw) {
+    private JSONObject parseJson(String json) {
+        try {
+            return JSON.parseObject(json);
+        } catch (Exception e) {
+            log.error("JSON解析失败, error={}", e.getMessage());
+            return null;
+        }
+    }
+
+    String cleanAiJsonOutput(String raw) {
         if (StringUtils.isBlank(raw)) {
             return raw;
         }
