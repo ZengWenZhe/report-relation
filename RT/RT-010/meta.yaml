@@ -1,0 +1,12 @@
+rt: RT-010
+title: cms-work-adapter 系统设计
+status: intake-done
+type: feature
+profile: spec-lite
+created: 2026-04-21
+updated: 2026-04-21
+owner: evan
+dependencies: []
+forwarded:
+  - 5.1: 成伟（阶段一完整方案）
+  - 5.2: 成伟（AI汇报类型处理）
