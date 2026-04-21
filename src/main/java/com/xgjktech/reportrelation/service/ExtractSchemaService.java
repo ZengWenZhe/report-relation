@@ -117,6 +117,8 @@ public class ExtractSchemaService {
         return true;
     }
 
+    private static final int MAX_CONTENT_LENGTH = 150000;
+
     public String fetchReportContent(Long reportId) {
         try {
             ReportListSimpleInfoByIdsParam param = new ReportListSimpleInfoByIdsParam();
@@ -132,7 +134,12 @@ public class ExtractSchemaService {
                 log.warn("汇报内容超过token限制，reportId={}", reportId);
             }
 
-            return gptVO.getContent();
+            String content = gptVO.getContent();
+            if (content != null && content.length() > MAX_CONTENT_LENGTH) {
+                log.warn("汇报内容超过{}字，已截断，reportId={}, 原始长度={}", MAX_CONTENT_LENGTH, reportId, content.length());
+                content = content.substring(0, MAX_CONTENT_LENGTH);
+            }
+            return content;
         } catch (Exception e) {
             log.error("获取汇报内容失败，reportId={}, error={}", reportId, e.getMessage(), e);
             return null;
